@@ -1,0 +1,8 @@
+{
+  "started": true,
+  "bundle": "build/a-watcher.app",
+  "realCodexSource": true,
+  "claudeEnabled": false,
+  "defaultDataDirectory": true,
+  "manualClickVerified": false
+}

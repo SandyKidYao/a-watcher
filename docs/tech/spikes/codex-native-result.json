@@ -1,0 +1,30 @@
+{
+  "httpStatus": 200,
+  "provider": "codex",
+  "readOnly": true,
+  "responseKeys": [
+    "account_id",
+    "additional_rate_limits",
+    "code_review_rate_limit",
+    "credits",
+    "email",
+    "model_usage",
+    "plan_type",
+    "promo",
+    "rate_limit",
+    "rate_limit_reached_type",
+    "rate_limit_reset_credits",
+    "spend_control",
+    "user_id"
+  ],
+  "status": "ok",
+  "transport": "native-urlsession",
+  "windows": [
+    {
+      "hasResetTime": true,
+      "lane": "primary_window",
+      "windowSeconds": 604800
+    }
+  ],
+  "publicExportNote": "Actual account plan, quota percentages, and token/model usage totals are omitted from the public report."
+}

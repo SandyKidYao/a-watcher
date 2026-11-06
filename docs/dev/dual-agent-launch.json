@@ -1,0 +1,9 @@
+{
+  "started": true,
+  "claudeLocalEnabled": true,
+  "claudeQuotaEnabled": false,
+  "statisticsRefreshSeconds": 3600,
+  "menuMode": "single-static-pending-animation-choice",
+  "quotaLayout": "one-row-seven-day",
+  "footer": "combined-today-tokens"
+}

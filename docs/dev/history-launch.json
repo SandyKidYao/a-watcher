@@ -1,0 +1,11 @@
+{
+  "started": true,
+  "version": "0.3.0",
+  "historyEntry": [
+    "today-token-footer",
+    "grid-button"
+  ],
+  "historyStyle": "annual-daily-heatmap",
+  "statisticsIntervalSeconds": 3600,
+  "claudeQuotaQueried": false
+}

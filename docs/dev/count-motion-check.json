@@ -1,0 +1,12 @@
+{
+  "completionAndDetachStopMotion" : true,
+  "gifWritten" : true,
+  "menuMoved" : true,
+  "motionEnabled" : true,
+  "nativePresentationSamples" : 20,
+  "passed" : true,
+  "resumesWithoutNewSession" : true,
+  "rowMoved" : true,
+  "staticFallbackKeepsCount" : true,
+  "synthetic" : true
+}

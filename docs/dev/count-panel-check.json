@@ -1,0 +1,19 @@
+{
+  "claudeFilesIndexed": 185,
+  "claudeQuotaQueried": false,
+  "claudeSessions": 33,
+  "filesIndexed": 146,
+  "manualClickTest": false,
+  "nativeViewRendering": true,
+  "partialUsage": true,
+  "quotaError": "none",
+  "quotaWindows": 1,
+  "sessions": 54,
+  "version": "0.4.0",
+  "coreChecks": 30,
+  "failures": 0,
+  "signatureVerified": true,
+  "settingsRemoved": true,
+  "footerRemoved": true,
+  "toolStateMergedInUI": true
+}

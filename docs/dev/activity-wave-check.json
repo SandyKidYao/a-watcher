@@ -1,0 +1,102 @@
+{
+  "nativeFileEvents": true,
+  "syntheticFixtures": true,
+  "actualMouseClickTest": false,
+  "startsObserved": true,
+  "partialCompletionRetainsWork": true,
+  "duplicateCompletionIgnored": true,
+  "allFinishedCheckObserved": true,
+  "unreadRestoredAfterRestart": true,
+  "programmaticPanelOpenClearsUnread": true,
+  "workAnimationRepeatCount": 3,
+  "motionReducedOnHost": false,
+  "noQuotaCredentialsProvided": true,
+  "events": [
+    {
+      "active": 0,
+      "attention": 0,
+      "completed": 0,
+      "mode": "uncertain",
+      "motionReduced": false,
+      "started": false,
+      "unread": 0,
+      "workAnimationRepeats": []
+    },
+    {
+      "active": 0,
+      "attention": 0,
+      "completed": 0,
+      "mode": "idle",
+      "motionReduced": false,
+      "started": false,
+      "unread": 0,
+      "workAnimationRepeats": []
+    },
+    {
+      "active": 1,
+      "attention": 0,
+      "completed": 0,
+      "mode": "working",
+      "motionReduced": false,
+      "started": true,
+      "unread": 0,
+      "workAnimationRepeats": [
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "active": 2,
+      "attention": 0,
+      "completed": 0,
+      "mode": "working",
+      "motionReduced": false,
+      "started": true,
+      "unread": 0,
+      "workAnimationRepeats": [
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "active": 1,
+      "attention": 0,
+      "completed": 1,
+      "mode": "working",
+      "motionReduced": false,
+      "started": false,
+      "unread": 1,
+      "workAnimationRepeats": [
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "active": 1,
+      "attention": 0,
+      "completed": 0,
+      "mode": "working",
+      "motionReduced": false,
+      "started": false,
+      "unread": 1,
+      "workAnimationRepeats": [
+        3,
+        3,
+        3
+      ]
+    },
+    {
+      "active": 0,
+      "attention": 0,
+      "completed": 1,
+      "mode": "completed",
+      "motionReduced": false,
+      "started": false,
+      "unread": 2,
+      "workAnimationRepeats": []
+    }
+  ]
+}

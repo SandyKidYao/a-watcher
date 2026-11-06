@@ -1,0 +1,18 @@
+{
+  "version": "0.4.0",
+  "scenario": "panel closed, real local sessions, animated menu count",
+  "measurement": "short observation, not long-term or WindowServer/GPU profiling",
+  "seconds": 35.14,
+  "warmCPUPercentOneCore": 0.2737,
+  "finalFootprintMiB": 15.86,
+  "peakFootprintMiB": 16.08,
+  "finalRSSMiB": 22.45,
+  "machTimebase": {
+    "numer": 125,
+    "denom": 3
+  },
+  "observedAnimatedWorkingCounts": [
+    1,
+    3
+  ]
+}

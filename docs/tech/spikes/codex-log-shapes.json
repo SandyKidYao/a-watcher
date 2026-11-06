@@ -1,0 +1,32 @@
+{
+  "provider": "codex",
+  "sampledFiles": 8,
+  "recordTypes": {
+    "session_meta": 8,
+    "event_msg": 504,
+    "response_item": 500,
+    "world_state": 6,
+    "turn_context": 34,
+    "token_usage_record": 153,
+    "inter_agent_communication_metadata": 1
+  },
+  "eventTypes": {
+    "task_started": 33,
+    "additional_tools": 4,
+    "message": 123,
+    "thread_settings_applied": 34,
+    "item_completed": 229,
+    "reasoning": 132,
+    "token_count": 155,
+    "task_complete": 32,
+    "custom_tool_call_output": 100,
+    "custom_tool_call": 100,
+    "function_call": 18,
+    "function_call_output": 19,
+    "user_message": 4,
+    "agent_message": 20,
+    "turn_aborted": 1
+  },
+  "messageUsageRows": 0,
+  "contentsStored": false
+}

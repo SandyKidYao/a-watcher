@@ -1,0 +1,20 @@
+{
+  "releaseCLIExit": 0,
+  "elapsedSeconds": 0.855,
+  "result": {
+    "cached": null,
+    "compressedFiles": 300,
+    "files": 144,
+    "input": null,
+    "models": null,
+    "output": null,
+    "partial": true,
+    "reasoning": null,
+    "records": 197,
+    "sessions": 30,
+    "skippedLines": 61,
+    "tokens": null,
+    "unresolvedForks": 1
+  },
+  "publicExportNote": "Actual account plan, quota percentages, and token/model usage totals are omitted from the public report."
+}

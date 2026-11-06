@@ -1,0 +1,29 @@
+{
+  "readOnly": true,
+  "contentsStored": false,
+  "providers": [
+    {
+      "provider": "codex",
+      "files": 3,
+      "jsonLines": 640,
+      "validLines": 640,
+      "usageRows": 67,
+      "repeatedCumulativeSnapshots": 0,
+      "completedUsageRows": null,
+      "partialOrLegacyRows": null,
+      "seconds": 0.014
+    },
+    {
+      "provider": "claude",
+      "files": 3,
+      "jsonLines": 3251,
+      "validLines": 3251,
+      "usageRows": 923,
+      "repeatedCumulativeSnapshots": null,
+      "completedUsageRows": 923,
+      "partialOrLegacyRows": 0,
+      "seconds": 0.064
+    }
+  ],
+  "probePeakRSSMiB": 19.281
+}

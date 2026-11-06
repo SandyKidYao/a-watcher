@@ -1,0 +1,11 @@
+{
+  "bytesRead": 327184621,
+  "contentsStored": false,
+  "elapsedSeconds": 11.986601458338555,
+  "files": 2,
+  "lines": 6236,
+  "oversizeLinesSkipped": 56,
+  "physicalFootprintPeakMiB": 12.812843322753906,
+  "readOnly": true,
+  "usageRows": 1229
+}

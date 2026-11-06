@@ -1,0 +1,19 @@
+{
+  "provider": "codex",
+  "transport": "stdio",
+  "readOnly": true,
+  "authMode": "chatgpt",
+  "status": "ok",
+  "windows": [
+    {
+      "lane": "primary",
+      "windowDurationMins": 10080,
+      "hasResetTime": true
+    }
+  ],
+  "accountBindingAvailable": true,
+  "elapsedSeconds": 2.95,
+  "childPeakRSSMiB": 205.28,
+  "helperReaped": true,
+  "publicExportNote": "Actual account plan, quota percentages, and token/model usage totals are omitted from the public report."
+}

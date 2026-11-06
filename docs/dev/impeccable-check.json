@@ -1,0 +1,24 @@
+{
+  "claudeFilesIndexed": 185,
+  "claudeQuotaQueried": false,
+  "claudeSessions": 33,
+  "filesIndexed": 146,
+  "manualClickTest": false,
+  "nativeViewRendering": true,
+  "partialUsage": true,
+  "quotaError": "none",
+  "quotaWindows": 1,
+  "sessions": 54,
+  "version": "0.3.1",
+  "coreChecks": 29,
+  "failures": 0,
+  "signatureVerified": true,
+  "syntheticFixtureRenders": [
+    "fixture-empty.png",
+    "fixture-long-names.png"
+  ],
+  "keyboardAndVoiceOverTested": false,
+  "steadyStatePerformanceRemeasured": false,
+  "projectNamesAnchored": true,
+  "sortOrderChanged": false
+}

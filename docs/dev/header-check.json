@@ -1,0 +1,7 @@
+{
+  "version": "0.4.1",
+  "running": true,
+  "coreChecks": 30,
+  "nativeHeaderRendered": true,
+  "manualClickTest": false
+}

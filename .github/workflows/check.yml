@@ -1,0 +1,9 @@
+name: Check
+on: [push, pull_request]
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash Scripts/check.sh
+      - run: bash Scripts/build.sh

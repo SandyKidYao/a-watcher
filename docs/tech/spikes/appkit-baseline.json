@@ -1,0 +1,34 @@
+{
+  "dataset" : "12 static rows, including 10 synthetic sessions",
+  "idleCPUPercentSingleCore" : 0.006574222862346735,
+  "idleSeconds" : 601.18132329167565,
+  "mode" : "appkit",
+  "releaseOptimized" : true,
+  "samples" : [
+    {
+      "phase" : "closedCold",
+      "physicalFootprintMiB" : 11.359992980957031,
+      "rssMiB" : 40.90625,
+      "taskInfoStatus" : 0
+    },
+    {
+      "phase" : "open10Sessions",
+      "physicalFootprintMiB" : 18.688209533691406,
+      "rssMiB" : 47.59375,
+      "taskInfoStatus" : 0
+    },
+    {
+      "phase" : "closedWarm",
+      "physicalFootprintMiB" : 18.391334533691406,
+      "rssMiB" : 31.640625,
+      "taskInfoStatus" : 0
+    },
+    {
+      "phase" : "closedAfterIdle",
+      "physicalFootprintMiB" : 17.969459533691406,
+      "rssMiB" : 14.328125,
+      "taskInfoStatus" : 0
+    }
+  ],
+  "singleRun" : true
+}

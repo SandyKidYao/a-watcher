@@ -1,0 +1,10 @@
+{
+  "transport": "native-unix-socket",
+  "syntheticOnly": true,
+  "eventsDelivered": 60,
+  "privateFieldsExcluded": true,
+  "observerOnlyNoStdout": true,
+  "missingSocketExitZero": true,
+  "launchAndDeliveryP95Millis": 5.170875025214627,
+  "launchAndDeliveryMedianMillis": 3.3991039963439107
+}

@@ -1,0 +1,12 @@
+{
+  "credentialSource": "environment",
+  "hasSubscriptionCredential": true,
+  "httpStatus": 403,
+  "interactiveKeychain": false,
+  "provider": "claude",
+  "readOnly": true,
+  "stage": "credential_read",
+  "status": "http_error",
+  "usageScopeMissing": true,
+  "credentialScopesDeclared": false
+}

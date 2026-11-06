@@ -1,0 +1,22 @@
+{
+  "exit": 0,
+  "seconds": 34.82,
+  "provider": "claude",
+  "quotaQueried": false,
+  "result": {
+    "cached": null,
+    "compressedFiles": 0,
+    "files": 173,
+    "input": null,
+    "models": null,
+    "output": null,
+    "partial": true,
+    "reasoning": null,
+    "records": 1005,
+    "sessions": 26,
+    "skippedLines": 2,
+    "tokens": null,
+    "unresolvedForks": 0
+  },
+  "publicExportNote": "Actual account plan, quota percentages, and token/model usage totals are omitted from the public report."
+}

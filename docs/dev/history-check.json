@@ -1,0 +1,10 @@
+{
+  "coreChecksPassed": 26,
+  "nativeHistoryRender": true,
+  "nativeClaudeRender": true,
+  "nativeDarkRender": true,
+  "manualMouseInteractionVerified": false,
+  "historyReadsCachedLedgerOnly": true,
+  "statisticsIntervalSeconds": 3600,
+  "claudeQuotaQueried": false
+}

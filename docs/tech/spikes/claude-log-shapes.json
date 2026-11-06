@@ -1,0 +1,25 @@
+{
+  "provider": "claude",
+  "sampledFiles": 8,
+  "recordTypes": {
+    "api-request": 436,
+    "last-prompt": 102,
+    "ai-title": 100,
+    "atis-latch": 102,
+    "attachment": 416,
+    "assistant": 875,
+    "user": 467,
+    "api-request-blob": 328,
+    "system": 8,
+    "queue-operation": 20,
+    "file-history-snapshot": 8,
+    "file-history-delta": 6,
+    "api-request-shape": 6,
+    "tools-used": 2,
+    "pr-link": 7,
+    "cost-state": 1
+  },
+  "eventTypes": {},
+  "messageUsageRows": 875,
+  "contentsStored": false
+}
