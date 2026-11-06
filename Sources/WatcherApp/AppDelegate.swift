@@ -47,8 +47,14 @@ import WatcherCore
         }
         model.resize = { [weak self] height in self?.panel?.contentSize = NSSize(width: self?.model?.panelWidth ?? 320, height: height) }
         model.changed = { [weak self] in self?.updateStatus() }
-        model.start()
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--export-showcase"), args.count > i + 1 {
+            model.offline = true
+            let directory = URL(fileURLWithPath: args[i + 1])
+            Task { await self.exportShowcase(to: directory); NSApp.terminate(nil) }
+            return
+        }
+        model.start()
         if let i = args.firstIndex(of: "--activity-log"), args.count > i + 1 { activityLog = URL(fileURLWithPath: args[i + 1]) }
         if args.contains("--show") { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() } }
         if let i = args.firstIndex(of: "--export-preview"), args.count > i + 1 {
@@ -184,7 +190,7 @@ import WatcherCore
         panel?.contentViewController?.view.window?.appearance = nil
         let report: [String: Any] = ["nativeViewRendering": true, "manualClickTest": false,
             "filesIndexed": model.index.usage.filesTotal, "sessions": model.allSessions.count,
-            "claudeFilesIndexed": model.claudeIndex.usage.filesTotal, "claudeSessions": model.claudeIndex.sessions.count, "claudeQuotaQueried": false,
+            "claudeFilesIndexed": model.claudeIndex.usage.filesTotal, "claudeSessions": model.claudeIndex.sessions.count, "claudeQuotaAvailable": model.claudeQuota != nil, "claudeQuotaError": model.claudeQuotaError?.code.rawValue ?? "none",
             "quotaWindows": model.quota?.windows.count ?? 0, "quotaError": model.quotaError?.code.rawValue ?? "none",
             "partialUsage": model.index.usage.isPartial]
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
@@ -196,6 +202,7 @@ import WatcherCore
         model.index = IndexSnapshot(); model.claudeIndex = IndexSnapshot()
         model.readyProviders = Set(AgentProvider.allCases)
         model.quota = nil; model.quotaError = QuotaFailure(.offline)
+        model.claudeQuota = nil; model.claudeQuotaError = QuotaFailure(.offline)
         model.navigate(.home)
         try? await Task.sleep(for: .milliseconds(300))
         renderPanel(to: directory.appendingPathComponent("fixture-empty.png"))
@@ -206,6 +213,66 @@ import WatcherCore
         model.navigate(.home)
         try? await Task.sleep(for: .milliseconds(300))
         renderPanel(to: directory.appendingPathComponent("fixture-long-names.png"))
+        panel?.close()
+    }
+    /// README screenshots from synthetic data only: no logs, credentials or network are read.
+    private func exportShowcase(to directory: URL) async {
+        guard let model else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let now = Date()
+        func session(_ provider: AgentProvider, _ id: String, _ project: String, _ status: SessionStatus, _ age: TimeInterval) -> SessionRecord {
+            var record = SessionRecord(id: "showcase-\(id)", project: project, directory: "/Users/demo/\(project)", model: provider == .codex ? "gpt-5-codex" : "claude-sonnet", status: status, observedAt: now.addingTimeInterval(-age))
+            record.provider = provider; record.projectDirectory = record.directory
+            return record
+        }
+        var codex = IndexSnapshot(), claude = IndexSnapshot()
+        codex.sessions = [session(.codex, "1", "aurora-web", .running, 4), session(.codex, "2", "payments-api", .waitingApproval, 95),
+                          session(.codex, "3", "design-system", .idle, 1500), session(.codex, "4", "data-notebooks", .idle, 7200)]
+        claude.sessions = [session(.claude, "5", "mobile-app", .tool, 12), session(.claude, "6", "docs-site", .idle, 420),
+                           session(.claude, "7", "infra-scripts", .waitingInput, 3000)]
+        codex.usage.tokens = TokenUsage(input: 9_820_000, cached: 7_100_000, output: 214_000); codex.usage.filesTotal = 12; codex.usage.filesDone = 12
+        claude.usage.tokens = TokenUsage(input: 5_960_000, cached: 4_800_000, output: 168_000); claude.usage.filesTotal = 9; claude.usage.filesDone = 9
+        model.index = codex; model.claudeIndex = claude; model.readyProviders = Set(AgentProvider.allCases)
+        func snapshot(_ windows: [[String: Any]]) -> QuotaSnapshot? {
+            let object: [String: Any] = ["binding": "showcase", "capturedAt": now.timeIntervalSinceReferenceDate, "windows": windows, "unlimitedCredits": false]
+            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? JSONDecoder().decode(QuotaSnapshot.self, from: $0) }
+        }
+        let day = 86400.0
+        model.quota = snapshot([["id": "codex:primary_window", "name": "Codex", "seconds": 18000, "usedPercent": 22, "resetsAt": now.timeIntervalSinceReferenceDate + 9000],
+                                ["id": "codex:secondary_window", "name": "Codex", "seconds": 604800, "usedPercent": 38, "resetsAt": now.timeIntervalSinceReferenceDate + 3.2 * day]])
+        model.claudeQuota = snapshot([["id": "five_hour", "name": "Claude", "seconds": 18000, "usedPercent": 14, "resetsAt": now.timeIntervalSinceReferenceDate + 6000],
+                                      ["id": "seven_day", "name": "Claude", "seconds": 604800, "usedPercent": 57, "resetsAt": now.timeIntervalSinceReferenceDate + 2.1 * day]])
+        model.quotaError = nil; model.claudeQuotaError = nil
+        let calendar = model.historyCalendar
+        var seed: UInt64 = 0x5eed
+        func next() -> Double { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Double(seed >> 33) / Double(1 << 31) }
+        var sources: [AgentProvider: UsageHistory] = [:]
+        for provider in AgentProvider.allCases {
+            var history = UsageHistory(); history.isPartial = false
+            for offset in 0..<200 {
+                guard let date = calendar.date(byAdding: .day, value: -offset, to: calendar.startOfDay(for: now)), next() > (calendar.isDateInWeekend(date) ? 0.7 : 0.15) else { continue }
+                var usage = UsageDay(date: date)
+                let scale = (provider == .codex ? 9_000_000.0 : 6_000_000.0) * (0.15 + next())
+                usage.tokens = TokenUsage(input: Int64(scale), cached: Int64(scale * 0.7), output: Int64(scale * 0.03)); usage.records = Int(scale / 40_000)
+                usage.models = [provider == .codex ? "gpt-5-codex" : "claude-sonnet": usage.tokens.total]
+                history.days.append(usage)
+            }
+            history.days.sort { $0.date < $1.date }; history.firstRecordedAt = history.days.first?.date
+            sources[provider] = history
+        }
+        try? await Task.sleep(for: .seconds(1))
+        if panel?.isShown != true { toggle() }
+        try? await Task.sleep(for: .milliseconds(500))
+        func shot(_ name: String, dark: Bool = false) async {
+            panel?.contentViewController?.view.window?.appearance = dark ? NSAppearance(named: .darkAqua) : nil
+            try? await Task.sleep(for: .milliseconds(400))
+            renderPanel(to: directory.appendingPathComponent("\(name).png"))
+        }
+        model.navigate(.home); await shot("home"); await shot("home-dark", dark: true)
+        model.showQuota(.claude); await shot("quota")
+        model.navigate(.history); model.applyShowcaseHistory(sources); await shot("history")
+        model.navigate(.legend); await shot("legend")
+        exportIconStates(to: directory)
         panel?.close()
     }
     private func exportIconStates(to directory: URL) {

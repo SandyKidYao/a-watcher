@@ -9,28 +9,13 @@ struct WatcherPanel: View {
     private var amber: Color { PanelStyle.warning(scheme) }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                if model.page != .home {
+            if model.page != .home {
+                HStack(spacing: 6) {
                     iconButton("chevron.left", "返回总览 · Esc") { model.navigate(.home) }
                     Text(pageTitle).font(.system(size: 12, weight: .medium)).foregroundStyle(secondary)
-                }
-                else {
-                    Spacer(minLength: 6)
-                    Button { model.navigate(.history) } label: {
-                        HStack(spacing: 3) {
-                            Text(model.todayTokenText).font(.system(size: 12, weight: .medium)).monospacedDigit()
-                            if model.index.usage.isPartial || model.claudeIndex.usage.isPartial {
-                                Image(systemName: "exclamationmark.circle").font(.system(size: 9)).foregroundStyle(secondary)
-                            }
-                        }.frame(height: 28).padding(.horizontal, 3).contentShape(Rectangle())
-                    }.buttonStyle(QuietButtonStyle())
-                        .help("今日两种 Agent 的本机 token 合计，每小时更新；点击查看历史。标记表示部分统计。")
-                        .accessibilityLabel("今日总 token，\(model.todayTokenText)，打开历史用量")
-                }
-                if model.page != .home { Spacer() }
-                iconButton(model.quotaBusy ? "ellipsis" : "arrow.clockwise", "刷新统计与额度 · ⌘R") { model.requestScan(); model.refreshQuota(manual: true) }.disabled(model.quotaBusy).keyboardShortcut("r")
-                iconButton("power", "退出 a-watcher · ⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q")
-            }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 6)
+                    Spacer()
+                }.padding(.horizontal, 12).padding(.vertical, 6)
+            }
             switch model.page {
             case .home: home
             case .quota: quotaDetails
@@ -39,14 +24,14 @@ struct WatcherPanel: View {
             case .legend: statusLegend
             case .session(let key): sessionDetails(key)
             }
+            Spacer(minLength: 0)
+            footer
         }.font(.system(size: 12)).frame(width: model.panelWidth, height: model.panelHeight, alignment: .top)
             .background(.background).transaction { $0.animation = nil }
             .onExitCommand { if model.page != .home { model.navigate(.home) } else { NSApp.keyWindow?.close() } }
     }
     private var home: some View {
         VStack(spacing: 0) {
-            quotaStrip.padding(.horizontal, 16).padding(.bottom, 8)
-            Divider().padding(.horizontal, 12)
             HStack(spacing: 2) {
                 Text("会话 \(model.filteredSessions.count)").foregroundStyle(secondary).font(.system(size: 10)).monospacedDigit()
                 iconButton("info.circle", "查看状态符号与时间说明") { model.navigate(.legend) }
@@ -63,7 +48,7 @@ struct WatcherPanel: View {
                     Text("Codex").tag(AgentProvider?.some(.codex))
                     Text("Claude").tag(AgentProvider?.some(.claude))
                 }.pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 150)
-            }.padding(.horizontal, 14).padding(.vertical, 4)
+            }.padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 4)
             if model.visibleSessions.isEmpty {
                 HStack { Image(systemName: "circle.dotted"); Text(model.isIndexing ? "正在读取本机记录" : "暂无近期会话") }.foregroundStyle(secondary).font(.system(size: 11)).frame(height: 36)
             } else {
@@ -91,33 +76,44 @@ struct WatcherPanel: View {
             Spacer(minLength: 8)
         }
     }
-    private var quotaStrip: some View {
-        HStack(spacing: 16) {
-            Text("7 日剩余").font(.system(size: 10)).foregroundStyle(secondary)
-            Spacer(minLength: 2)
-            quotaButton(.codex, remaining: model.quota?.windows.first(where: { $0.name == "Codex" && $0.seconds == 604800 })?.remainingPercent)
-            quotaButton(.claude, remaining: nil)
-        }.padding(.vertical, 4)
+    /// Account rings on the left; local token total, refresh and quit on the right.
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Divider().padding(.horizontal, 12)
+            HStack(spacing: 6) {
+                quotaButton(.codex, remaining: model.quota?.windows.first(where: { $0.name == "Codex" && $0.seconds == 604800 })?.remainingPercent)
+                quotaButton(.claude, remaining: model.claudeQuota?.windows.first(where: { $0.id == "seven_day" })?.remainingPercent)
+                Spacer(minLength: 6)
+                Button { model.navigate(.history) } label: {
+                    HStack(spacing: 3) {
+                        Text(model.todayTokenText).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                        if model.index.usage.isPartial || model.claudeIndex.usage.isPartial {
+                            Image(systemName: "exclamationmark.circle").font(.system(size: 9)).foregroundStyle(secondary)
+                        }
+                    }.frame(height: 28).padding(.horizontal, 3).contentShape(Rectangle())
+                }.buttonStyle(QuietButtonStyle())
+                    .help("今日两种 Agent 的本机 token 合计，每小时更新；点击查看历史。标记表示部分统计。")
+                    .accessibilityLabel("今日总 token，\(model.todayTokenText)，打开历史用量")
+                iconButton(model.quotaBusy ? "ellipsis" : "arrow.clockwise", "刷新统计与额度 · ⌘R") { model.requestScan(); model.refreshQuota(manual: true) }.disabled(model.quotaBusy).keyboardShortcut("r")
+                iconButton("power", "退出 a-watcher · ⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q")
+            }.padding(.horizontal, 10).frame(height: 40)
+        }
     }
     private func quotaButton(_ provider: AgentProvider, remaining: Int?) -> some View {
         Button { model.showQuota(provider) } label: {
-            HStack(spacing: 8) {
-                AgentIcon(provider: provider, size: 22)
-                QuotaRing(remaining: remaining, stale: provider == .codex && model.quotaError != nil)
-            }.frame(height: 30).padding(.horizontal, 3).contentShape(Rectangle())
+            HStack(spacing: 5) {
+                AgentIcon(provider: provider, size: 18)
+                QuotaRing(remaining: remaining, stale: model.accountQuotaError(provider) != nil)
+            }.frame(height: 28).padding(.horizontal, 3).contentShape(Rectangle())
         }.buttonStyle(QuietButtonStyle())
-            .help(provider.name + " · 7 日剩余 " + (remaining.map { "\($0)%" } ?? "暂不可用") + (provider == .codex && model.quotaError != nil ? " · 数据未刷新" : "") + "；点击查看详情")
+            .help(provider.name + " · 7 日剩余 " + (remaining.map { "\($0)%" } ?? "暂不可用") + (model.accountQuotaError(provider) != nil ? " · 数据未刷新" : "") + "；点击查看详情")
             .accessibilityLabel(provider.name + "，7 日剩余 " + (remaining.map { "\($0)%" } ?? "未知") + "，查看详情")
     }
     private var quotaDetails: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
                 heading(model.quotaProvider, "账户剩余额度")
-                if model.quotaProvider == .claude {
-                    Text("额度暂未连接").font(.system(size: 19, weight: .medium)).padding(.top, 6)
-                    Text("当前暂不查询 Claude 账户额度。本机工作状态、会话与 token 用量仍正常采集。").font(.system(size: 12)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("查看 Claude 本机用量") { model.showUsage(.claude) }.buttonStyle(.bordered).controlSize(.small)
-                } else if let quota = model.quota {
+                if let quota = model.accountQuota(model.quotaProvider) {
                     ForEach(quota.windows) { window in
                         VStack(alignment: .leading, spacing: 7) {
                             HStack { Text(window.name == "Codex" ? window.shortLabel : "\(window.name) · \(window.shortLabel)"); Spacer(); Text("\(window.remainingPercent)%").font(.system(size: 21, weight: .medium)).monospacedDigit() }
@@ -125,12 +121,23 @@ struct WatcherPanel: View {
                         }
                     }
                     if quota.unlimitedCredits { row("积分", "无限") } else if let balance = quota.creditBalance { row("积分余额", balance) }
+                    if model.quotaProvider == .claude {
+                        if !quota.windows.contains(where: { $0.id == "seven_day" }) { row("7 日剩余", "未知") }
+                        if let billing = quota.claudeBilling {
+                            row("额外用量计费", billing.enabled.map { $0 ? "已启用" : "未启用" } ?? "未知")
+                            if billing.enabled != false {
+                                row("账期支出", billing.spent?.formatted ?? "未知")
+                                row("支出上限", billing.limit?.formatted ?? "未知")
+                                row("剩余支出预算", billing.remainingBudget?.formatted ?? "未知")
+                            }
+                            row("账户余额", billing.balance?.formatted ?? "未知")
+                        } else { row("额外用量计费", "未知"); row("账户余额", "未知") }
+                        Text("支出预算与账户余额分开显示；缺失字段不作估算。").font(.system(size: 10)).foregroundStyle(secondary)
+                    }
                     row("采集", quota.capturedAt.formatted(date: .omitted, time: .shortened)); row("范围", "账户 · 含其他设备")
                 }
-                if model.quotaProvider == .codex {
-                    if let error = model.quotaError { Text(error.message).font(.system(size: 11)).foregroundStyle(amber) }
-                    Button("查看 Codex 本机用量") { model.showUsage(.codex) }.buttonStyle(.bordered).controlSize(.small)
-                }
+                if let error = model.accountQuotaError(model.quotaProvider) { Text(error.message(for: model.quotaProvider)).font(.system(size: 11)).foregroundStyle(amber) }
+                Button("查看 \(model.quotaProvider.name) 本机用量") { model.showUsage(model.quotaProvider) }.buttonStyle(.bordered).controlSize(.small)
             }.padding(16)
         }
     }

@@ -24,6 +24,8 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     @Published var quotaProvider = AgentProvider.codex
     @Published var readyProviders: Set<AgentProvider> = []
     @Published var quota: QuotaSnapshot?
+    @Published var claudeQuota: QuotaSnapshot?
+    @Published var claudeQuotaError: QuotaFailure?
     @Published var quotaError: QuotaFailure?
     @Published var scanError: String?
     @Published var quotaBusy = false
@@ -34,6 +36,10 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     let root: URL
     let claudeRoot: URL
     let dataDirectory: URL
+    let claudeQuotaClient: ClaudeQuotaClient
+    /// Synthetic showcase rendering: never touch logs, credentials or the network.
+    var offline = false
+    private var claudeQuotaCheckedAt = Date.distantPast
     let quotaClient: CodexQuotaClient
     private var engines: [AgentProvider: CodexIndex] = [:]
     private var watchers: [SourceWatcher] = []
@@ -56,6 +62,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
         claudeRoot = URL(fileURLWithPath: option("--claude-home") ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path).standardizedFileURL.resolvingSymlinksInPath()
         dataDirectory = URL(fileURLWithPath: option("--data-dir") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/a-watcher").path)
         let identifier = String(stableHash(root.path).prefix(16))
+        claudeQuotaClient = ClaudeQuotaClient(root: claudeRoot, cacheFile: dataDirectory.appendingPathComponent("quota-claude-\(stableHash(claudeRoot.path).prefix(16)).json"))
         quotaClient = CodexQuotaClient(root: root, cacheFile: dataDirectory.appendingPathComponent("quota-\(identifier).json"))
     }
     var allSessions: [SessionRecord] {
@@ -68,7 +75,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     var filteredSessions: [SessionRecord] { allSessions.filter { selectedProvider == nil || $0.provider == selectedProvider } }
     var visibleSessions: ArraySlice<SessionRecord> { filteredSessions.prefix(showAllSessions ? filteredSessions.count : 5) }
     var panelWidth: CGFloat { page == .history ? 760 : 320 }
-    var panelHeight: CGFloat { page == .history ? 500 : page == .legend ? 480 : page == .home ? CGFloat(128 + max(1, min(visibleSessions.count, showAllSessions ? 9 : 5)) * 36 + (isIndexing ? 24 : 0)) : 420 }
+    var panelHeight: CGFloat { page == .history ? 540 : page == .legend ? 520 : page == .home ? CGFloat(86 + max(1, min(visibleSessions.count, showAllSessions ? 9 : 5)) * 36 + (isIndexing ? 24 : 0)) : 460 }
     var todayTokenText: String {
         guard index.usage.filesTotal + claudeIndex.usage.filesTotal > 0 else { return "—" }
         return compactNumber(index.usage.tokens.total + claudeIndex.usage.tokens.total)
@@ -91,6 +98,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     func start() {
         Task {
             quota = await quotaClient.lastKnown()
+            claudeQuota = await claudeQuotaClient.lastKnown()
             for provider in AgentProvider.allCases {
                 let source = provider == .codex ? root : claudeRoot
                 let database = dataDirectory.appendingPathComponent("index-\(provider.rawValue)-\(stableHash(source.path).prefix(16))-v2.sqlite")
@@ -111,7 +119,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
                     requestScan(provider)
                 } catch { scanError = "\(provider.name) 索引暂不可用"; readyProviders.insert(provider) }
             }
-            if quota == nil || Date().timeIntervalSince(quota!.capturedAt) >= 3600 { refreshQuota() }; scheduleRefresh()
+            refreshQuota(); scheduleRefresh()
         }
         lifecycle = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: DispatchQueue.main).sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.requestScan(); self?.refreshQuota() }
@@ -172,27 +180,44 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
         }
     }
     func showUsage(_ provider: AgentProvider) { usageProvider = provider; navigate(.usage) }
+    func accountQuota(_ provider: AgentProvider) -> QuotaSnapshot? { provider == .codex ? quota : claudeQuota }
+    func accountQuotaError(_ provider: AgentProvider) -> QuotaFailure? { provider == .codex ? quotaError : claudeQuotaError }
     func showQuota(_ provider: AgentProvider) { quotaProvider = provider; navigate(.quota) }
     func refreshQuota(manual: Bool = false) {
-        guard quotaTask == nil else { return }
+        guard !offline, quotaTask == nil else { return }
         quotaBusy = true
         quotaTask = Task { [weak self] in
             guard let self else { return }
             if !manual, quotaError == nil, let existing = await quotaClient.lastKnown(), Date().timeIntervalSince(existing.capturedAt) < 3600 {
-                quota = existing; quotaBusy = false; quotaTask = nil; changed?(); return
+                quota = existing
+            } else {
+                do { quota = try await quotaClient.refresh(manual: manual); quotaError = nil }
+                catch let error as QuotaFailure {
+                    quotaError = error
+                    quota = error.invalidatesSnapshot ? nil : await quotaClient.lastKnown()
+                } catch { if !Task.isCancelled { quotaError = QuotaFailure(.offline) } }
             }
-            do { quota = try await quotaClient.refresh(manual: manual); quotaError = nil }
-            catch let error as QuotaFailure {
-                quotaError = error
-                quota = error.invalidatesSnapshot ? nil : await quotaClient.lastKnown()
-            } catch { if !Task.isCancelled { quotaError = QuotaFailure(.offline) } }
+            // Each Claude credential check runs /usr/bin/security; automatic checks stay at most once per 10 minutes.
+            // A refused Keychain read must never re-prompt in the background; only a manual refresh retries it.
+            if manual || (claudeQuotaError?.code != .credentialAccess && Date().timeIntervalSince(claudeQuotaCheckedAt) >= 600) {
+                claudeQuotaCheckedAt = Date()
+                if !manual, claudeQuotaError == nil, let existing = await claudeQuotaClient.lastKnown(), Date().timeIntervalSince(existing.capturedAt) < 3600 {
+                    claudeQuota = existing
+                } else {
+                    do { claudeQuota = try await claudeQuotaClient.refresh(manual: manual); claudeQuotaError = nil }
+                    catch let error as QuotaFailure {
+                        claudeQuotaError = error
+                        claudeQuota = error.invalidatesSnapshot ? nil : await claudeQuotaClient.lastKnown()
+                    } catch { if !Task.isCancelled { claudeQuotaError = QuotaFailure(.offline) } }
+                }
+            }
             quotaBusy = false; quotaTask = nil; changed?(); resize?(panelHeight)
         }
     }
     func opened() {
         panelVisible = true
         page = .home; showAllSessions = false
-        if quota == nil || Date().timeIntervalSince(quota!.capturedAt) >= 3600 { refreshQuota() }
+        refreshQuota()
         resize?(panelHeight)
     }
     func closed() { panelVisible = false; historyTask?.cancel(); historyLoading = false; page = .home }
@@ -212,6 +237,10 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
         let end = historyCalendar.date(byAdding: .day, value: -1, to: historyCalendar.date(byAdding: .year, value: 1, to: start)!)!
         return start...min(end, historyCalendar.startOfDay(for: Date()))
     }
+    func applyShowcaseHistory(_ sources: [AgentProvider: UsageHistory]) {
+        historySources = sources; historyLoading = false; historyPartial = false; historyError = nil
+        historySelection = historyCalendar.startOfDay(for: Date()); rebuildHistory()
+    }
     func selectHistoryScope(_ provider: AgentProvider?) { historyScope = provider; rebuildHistory() }
     func selectHistoryYear(_ year: Int) {
         guard year != historyYear else { return }
@@ -220,7 +249,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
         rebuildHistory(); loadHistory(selectLatest: true)
     }
     func loadHistory(selectLatest: Bool = false) {
-        guard panelVisible, page == .history else { return }
+        guard !offline, panelVisible, page == .history else { return }
         historyTask?.cancel(); historyLoading = true; historyError = nil
         let year = historyYear, calendar = historyCalendar, initialSelection = historySelection
         historyTask = Task { [weak self] in

@@ -1,7 +1,7 @@
 import Foundation
 
 public struct QuotaFailure: Error, Sendable, Equatable {
-    public enum Code: String, Sendable { case noCredentials, expiredCredential, authorization, accountChanged, offline, rateLimited, invalidResponse, server }
+    public enum Code: String, Sendable { case noCredentials, expiredCredential, authorization, accountChanged, missingScope, credentialAccess, offline, rateLimited, invalidResponse, server }
     public var code: Code
     public var retryAt: Date?
     public init(_ code: Code, retryAt: Date? = nil) { self.code = code; self.retryAt = retryAt }
@@ -11,13 +11,19 @@ public struct QuotaFailure: Error, Sendable, Equatable {
         case .expiredCredential: "请在 Codex 中刷新登录"
         case .authorization: "Codex 登录需要更新"
         case .accountChanged: "账户已变更，请刷新"
+        case .missingScope: "当前登录无权查询额度"
+        case .credentialAccess: "无法读取登录凭据，请检查钥匙串访问权限"
         case .offline: "连接不可用，保留上次额度"
         case .rateLimited: "查询限流，稍后重试"
         case .invalidResponse: "额度格式暂不支持"
         case .server: "额度服务暂不可用"
         }
     }
-    public var invalidatesSnapshot: Bool { [.noCredentials, .expiredCredential, .authorization, .accountChanged].contains(code) }
+    public func message(for provider: AgentProvider) -> String {
+        if provider == .claude, code == .expiredCredential { return "登录令牌已过期，请在 Claude Code 中继续使用后刷新额度" }
+        return message.replacingOccurrences(of: "Codex", with: provider.name)
+    }
+    public var invalidatesSnapshot: Bool { [.noCredentials, .expiredCredential, .authorization, .accountChanged, .missingScope, .credentialAccess].contains(code) }
 }
 
 private struct CodexCredentials: Sendable {

@@ -1,0 +1,60 @@
+name: Release
+
+# Publishing a GitHub Release (or pushing a v* tag) builds the macOS app and
+# attaches a zip to that release.
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    env:
+      TAG: ${{ github.event.release.tag_name || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Stamp version
+        if: startsWith(env.TAG, 'v')
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${TAG#v}" Resources/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" Resources/Info.plist
+
+      - name: Checks
+        run: bash Scripts/check.sh
+
+      - name: Build app
+        run: bash Scripts/build.sh
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent build/a-watcher.app "dist/a-watcher-${TAG}-macos-arm64.zip"
+          shasum -a 256 dist/*.zip | tee dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a-watcher-${{ env.TAG }}
+          path: dist/*
+
+      - name: Attach to release
+        if: startsWith(env.TAG, 'v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A pushed tag creates its release; a published release is reused.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "a-watcher $TAG" --generate-notes
+          gh release upload "$TAG" dist/* --clobber

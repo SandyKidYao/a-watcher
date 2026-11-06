@@ -11,5 +11,6 @@ cp "$AW_PROJECT_ROOT"/Resources/Brand/*.png "$AW_APP_DIR/Contents/Resources/Bran
 cp "$AW_BIN_DIR/a-watcher" "$AW_APP_DIR/Contents/MacOS/a-watcher"
 cp "$AW_BIN_DIR/watcherctl" "$AW_APP_DIR/Contents/MacOS/watcherctl"
 cp "$AW_PROJECT_ROOT/Resources/Info.plist" "$AW_APP_DIR/Contents/Info.plist"
+cp "$AW_PROJECT_ROOT/Resources/AppIcon.icns" "$AW_APP_DIR/Contents/Resources/AppIcon.icns"
 /usr/bin/codesign --force --sign - "$AW_APP_DIR"
 printf 'Built %s\n' "$AW_APP_DIR"

@@ -417,9 +417,129 @@ private func expectThrows(_ work: () throws -> Any) throws {
     do { _ = try work() } catch is QuotaFailure { return }
     throw CheckFailure("Expected QuotaFailure")
 }
+func claudeQuotaWindowsAndBilling() throws {
+    let data = try json(["five_hour": ["utilization": 25.5, "resets_at": "2026-11-06T10:00:00Z"],
+                         "seven_day": ["utilization": 70], "seven_day_opus": ["utilization": 101],
+                         "extra_usage": ["is_enabled": true, "used_credits": 1250, "monthly_limit": 5000]])
+    let value = try ClaudeQuotaDecoder.decode(data, binding: "synthetic")
+    try expect(value.windows.count == 3)
+    try expect(value.windows[0].remainingPercent == 74 && value.windows[0].resetsAt != nil)
+    try expect(value.windows[1].remainingPercent == 30 && value.windows[2].remainingPercent == 0)
+    let billing = try require(value.claudeBilling)
+    try expect(billing.remainingBudget?.amount == 37.5)
+    try expect(billing.spent?.amount == 12.5 && billing.spent?.currency == "USD")
+    try expect(value.creditBalance == nil && !value.unlimitedCredits)
+    try expect(try JSONDecoder().decode(QuotaSnapshot.self, from: JSONEncoder().encode(value)) == value)
+}
+func claudeQuotaMissingValuesStayUnknown() throws {
+    let value = try ClaudeQuotaDecoder.decode(json(["five_hour": ["utilization": true], "seven_day": NSNull(),
+        "extra_usage": ["is_enabled": true, "used_credits": NSNull(), "monthly_limit": NSNull()]]), binding: "synthetic")
+    try expect(value.windows.isEmpty)
+    try expect(value.claudeBilling?.remainingBudget == nil)
+    try expect(value.claudeBilling?.spent == nil)
+    try expectThrows { try ClaudeQuotaDecoder.decode(json(["seven_day": ["utilization": -2]]), binding: "synthetic") }
+    try expectThrows { try ClaudeQuotaDecoder.decode(Data("[]".utf8), binding: "synthetic") }
+    try expectThrows { try ClaudeQuotaDecoder.decode(Data(repeating: 32, count: 1024 * 1024 + 1), binding: "synthetic") }
+}
+func claudeBillingDisabledAndUnsupportedCurrency() throws {
+    let disabled = try ClaudeQuotaDecoder.decode(json(["extra_usage": ["is_enabled": false]]), binding: "synthetic")
+    try expect(disabled.claudeBilling?.enabled == false && disabled.claudeBilling?.remainingBudget == nil)
+    let other = try ClaudeQuotaDecoder.decode(json(["extra_usage": ["is_enabled": true, "currency": "JPY", "used_credits": 100, "monthly_limit": 500]]), binding: "synthetic")
+    try expect(other.claudeBilling?.spent?.currency == "JPY")
+    let legacy = try JSONDecoder().decode(QuotaSnapshot.self, from: json(["binding": "synthetic", "capturedAt": 0, "windows": [], "unlimitedCredits": false]))
+    try expect(legacy.claudeBilling == nil)
+    try expect(QuotaFailure(.noCredentials).message(for: .claude).contains("Claude"))
+    try expect(QuotaFailure(.credentialAccess).invalidatesSnapshot)
+}
+
+func claudeClientCachesAndInvalidatesCredentials() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credential = directory.appendingPathComponent("synthetic.json")
+    let cache = directory.appendingPathComponent("quota.json")
+    try json(["claudeAiOauth": ["accessToken": "synthetic-only", "expiresAt": 4102444800000]]).write(to: credential)
+    let client = ClaudeQuotaClient(root: directory, cacheFile: cache, transport: { request in
+        guard request.url?.absoluteString == "https://api.anthropic.com/api/oauth/usage",
+              request.value(forHTTPHeaderField: "anthropic-beta") == "oauth-2025-04-20" else { throw CheckFailure("Unexpected endpoint") }
+        return (try json(["seven_day": ["utilization": 20]]), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }, credentialData: { try Data(contentsOf: credential) })
+    let value = try await client.refresh()
+    try expect(value.windows.first?.remainingPercent == 80)
+    try await expectAsync { await client.lastKnown() == value }
+    let persisted = try String(contentsOf: cache, encoding: .utf8)
+    try expect(!persisted.contains("synthetic-only") && !persisted.contains("accessToken"))
+    try json(["claudeAiOauth": ["accessToken": "changed-account", "expiresAt": 4102444800000]]).write(to: credential)
+    try await expectAsync { await client.lastKnown() == nil }
+    try json(["claudeAiOauth": ["accessToken": "", "expiresAt": 0]]).write(to: credential)
+    do { _ = try await client.refresh(); throw CheckFailure("Empty credential accepted") }
+    catch let failure as QuotaFailure { try expect(failure.code == .noCredentials) }
+    // Stored expiry is advisory; the server is authoritative (matching Orca).
+    try json(["claudeAiOauth": ["accessToken": "expired", "expiresAt": 1]]).write(to: credential)
+    let advisory = try await client.refresh()
+    try expect(advisory.windows.first?.remainingPercent == 80)
+}
+func claudeClientHandlesAuthorizationAndRateLimit() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let data = try json(["claudeAiOauth": ["accessToken": "synthetic-only", "expiresAt": 4102444800000]])
+    for (status, code) in [(401, QuotaFailure.Code.authorization), (403, .missingScope), (429, .rateLimited), (500, .server)] {
+        let client = ClaudeQuotaClient(root: directory, cacheFile: directory.appendingPathComponent("quota.json"), transport: { request in
+            (Data(), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Retry-After": "120"])!)
+        }, credentialData: { data })
+        do { _ = try await client.refresh(); throw CheckFailure("HTTP failure accepted") }
+        catch let failure as QuotaFailure {
+            try expect(failure.code == code)
+            if status == 429 { try expect(failure.retryAt != nil) }
+        }
+        if status == 429 {
+            do { _ = try await client.refresh(manual: true); throw CheckFailure("Rate limit bypassed") }
+            catch let failure as QuotaFailure { try expect(failure.code == .rateLimited) }
+        }
+    }
+}
+
+func claudeKeychainOutputDecodes() throws {
+    let plain = try require(ClaudeQuotaDecoder.keychainPayload(Data("{\"claudeAiOauth\":{}}\n".utf8)))
+    try expect(String(decoding: plain, as: UTF8.self) == "{\"claudeAiOauth\":{}}")
+    let hex = try require(ClaudeQuotaDecoder.keychainPayload(Data("7b7d\n".utf8)))
+    try expect(String(decoding: hex, as: UTF8.self) == "{}")
+    try expect(ClaudeQuotaDecoder.keychainPayload(Data("\n".utf8)) == nil)
+    try expect(ClaudeQuotaDecoder.keychainPayload(Data("not-json".utf8)) == nil)
+}
+
+func claudeModernSpendAndWindowFormats() throws {
+    let value = try ClaudeQuotaDecoder.decode(json([
+        "five_hour": ["used_percentage": 10, "resets_at": 1793952000],
+        "seven_day": ["utilization": 20, "resets_at": "1793952000000"],
+        "limits": [["kind": "weekly_scoped", "percent": 40, "scope": ["model": ["display_name": "Fable"]]]],
+        "spend": ["enabled": true, "used": ["amount_minor": 12345, "exponent": 3, "currency": "USD"],
+                  "cap": ["money": ["amount_minor": 50000, "exponent": 3, "currency": "USD"]],
+                  "balance": ["amount_minor": 900, "exponent": 2, "currency": "USD"]],
+        "extra_usage": ["is_enabled": true, "used_credits": 1, "monthly_limit": 2]
+    ]), binding: "synthetic")
+    try expect(value.windows.count == 3 && value.windows[0].resetsAt == value.windows[1].resetsAt)
+    try expect(value.windows[2].name == "Fable")
+    try expect(value.claudeBilling?.spent?.amount == 12.345 && value.claudeBilling?.limit?.amount == 50)
+    try expect(value.claudeBilling?.balance?.amount == 9)
+    let legacy = try ClaudeQuotaDecoder.decode(json(["extra_usage": ["is_enabled": true, "currency": "JPY", "decimal_places": 0, "used_credits": 100, "monthly_limit": 500]]), binding: "synthetic")
+    try expect(legacy.claudeBilling?.spent?.amount == 100)
+    let mixed = try ClaudeQuotaDecoder.decode(json(["spend": ["enabled": true, "used": ["amount_minor": 100, "currency": "USD"], "limit": ["amount_minor": 200, "currency": "EUR"]]]), binding: "synthetic")
+    try expect(mixed.claudeBilling?.remainingBudget == nil)
+    let invalid = try ClaudeQuotaDecoder.decode(json(["extra_usage": ["is_enabled": true, "decimal_places": -1, "used_credits": 100]]), binding: "synthetic")
+    try expect(invalid.claudeBilling?.spent == nil)
+}
+
 @main struct Checks {
     static func main() async {
         var failures = 0
+        do { try claudeKeychainOutputDecodes(); print("PASS claudeKeychainOutputDecodes") } catch { failures += 1; print("FAIL claudeKeychainOutputDecodes: \(error)") }
+        do { try claudeModernSpendAndWindowFormats(); print("PASS claudeModernSpendAndWindowFormats") } catch { failures += 1; print("FAIL claudeModernSpendAndWindowFormats: \(error)") }
+        do { try await claudeClientCachesAndInvalidatesCredentials(); print("PASS claudeClientCachesAndInvalidatesCredentials") } catch { failures += 1; print("FAIL claudeClientCachesAndInvalidatesCredentials: \(error)") }
+        do { try await claudeClientHandlesAuthorizationAndRateLimit(); print("PASS claudeClientHandlesAuthorizationAndRateLimit") } catch { failures += 1; print("FAIL claudeClientHandlesAuthorizationAndRateLimit: \(error)") }
+        do { try claudeQuotaWindowsAndBilling(); print("PASS claudeQuotaWindowsAndBilling") } catch { failures += 1; print("FAIL claudeQuotaWindowsAndBilling: \(error)") }
+        do { try claudeQuotaMissingValuesStayUnknown(); print("PASS claudeQuotaMissingValuesStayUnknown") } catch { failures += 1; print("FAIL claudeQuotaMissingValuesStayUnknown: \(error)") }
+        do { try claudeBillingDisabledAndUnsupportedCurrency(); print("PASS claudeBillingDisabledAndUnsupportedCurrency") } catch { failures += 1; print("FAIL claudeBillingDisabledAndUnsupportedCurrency: \(error)") }
         do { try cachedAndReasoningAreSubsets(); print("PASS cachedAndReasoningAreSubsets") } catch { failures += 1; print("FAIL cachedAndReasoningAreSubsets: \(error)") }
         do { try timestampSupportsWholeAndFractionalSeconds(); print("PASS timestampSupportsWholeAndFractionalSeconds") } catch { failures += 1; print("FAIL timestampSupportsWholeAndFractionalSeconds: \(error)") }
         do { try cumulativeRepetitionDoesNotChargeAgain(); print("PASS cumulativeRepetitionDoesNotChargeAgain") } catch { failures += 1; print("FAIL cumulativeRepetitionDoesNotChargeAgain: \(error)") }
@@ -450,7 +570,7 @@ private func expectThrows(_ work: () throws -> Any) throws {
         do { try await cachedProjectMetadataRecoversFromInitialDirectory(); print("PASS cachedProjectMetadataRecoversFromInitialDirectory") } catch { failures += 1; print("FAIL cachedProjectMetadataRecoversFromInitialDirectory: \(error)") }
         do { try await projectAnchorSurvivesIndexRestart(); print("PASS projectAnchorSurvivesIndexRestart") } catch { failures += 1; print("FAIL projectAnchorSurvivesIndexRestart: \(error)") }
         do { try workingCountExcludesWaitingAndStaleSessions(); print("PASS workingCountExcludesWaitingAndStaleSessions") } catch { failures += 1; print("FAIL workingCountExcludesWaitingAndStaleSessions: \(error)") }
-        print("\(30) checks, \(failures) failures")
+        print("\(37) checks, \(failures) failures")
         if failures > 0 { exit(1) }
     }
 }

@@ -13,9 +13,12 @@ import WatcherCore
         do {
             switch args.first {
             case "quota":
-                guard provider == .codex else { print("Claude 额度实地查询已暂缓"); return }
-                let client = CodexQuotaClient(root: root, cacheFile: directory.appendingPathComponent("quota-\(name).json"))
-                let snapshot = try await client.refresh(manual: true)
+                let snapshot: QuotaSnapshot
+                if provider == .claude {
+                    snapshot = try await ClaudeQuotaClient(root: root, cacheFile: directory.appendingPathComponent("quota-claude-\(name).json")).refresh(manual: true)
+                } else {
+                    snapshot = try await CodexQuotaClient(root: root, cacheFile: directory.appendingPathComponent("quota-\(name).json")).refresh(manual: true)
+                }
                 let data = try JSONEncoder().encode(snapshot)
                 print(String(decoding: data, as: UTF8.self))
             case "scan":
@@ -32,7 +35,7 @@ import WatcherCore
             case "doctor":
                 var result: [String: Any] = ["provider": provider.rawValue, "localDirectory": FileManager.default.fileExists(atPath: root.path),
                     "sessionsDirectory": FileManager.default.fileExists(atPath: root.appendingPathComponent(provider == .codex ? "sessions" : "projects").path),
-                    "claudeLocalEnabled": true, "claudeQuotaEnabled": false]
+                    "claudeLocalEnabled": true, "claudeQuotaEnabled": true]
                 if provider == .codex { result["credentialFile"] = FileManager.default.fileExists(atPath: root.appendingPathComponent("auth.json").path) }
 
                 print(String(decoding: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), as: UTF8.self))
@@ -40,7 +43,7 @@ import WatcherCore
                 print("watcherctl scan|quota|doctor [--provider codex|claude] [--codex-home PATH] [--claude-home PATH] [--data-dir PATH] [--days N]")
             }
         } catch let failure as QuotaFailure {
-            FileHandle.standardError.write(Data("\(failure.message)\n".utf8)); exit(1)
+            FileHandle.standardError.write(Data("\(failure.message(for: provider))\n".utf8)); exit(1)
         } catch {
             FileHandle.standardError.write(Data("本机索引操作失败：\(type(of: error))\n".utf8)); exit(1)
         }

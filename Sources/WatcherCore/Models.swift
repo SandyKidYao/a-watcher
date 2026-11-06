@@ -125,12 +125,30 @@ public struct QuotaWindow: Codable, Sendable, Equatable, Identifiable {
         return "\(seconds / 60)m"
     }
 }
+public struct ClaudeMoney: Codable, Sendable, Equatable {
+    public var amount: Double
+    public var currency: String
+    public var formatted: String { amount.formatted(.currency(code: currency)) }
+}
+
+public struct ClaudeBilling: Codable, Sendable, Equatable {
+    public var enabled: Bool?
+    public var spent: ClaudeMoney?
+    public var limit: ClaudeMoney?
+    public var balance: ClaudeMoney?
+    public var remainingBudget: ClaudeMoney? {
+        guard enabled == true, let spent, let limit, spent.currency == limit.currency else { return nil }
+        return ClaudeMoney(amount: max(0, limit.amount - spent.amount), currency: limit.currency)
+    }
+}
+
 public struct QuotaSnapshot: Codable, Sendable, Equatable {
     public var binding: String
     public var capturedAt: Date
     public var windows: [QuotaWindow]
     public var creditBalance: String?
     public var unlimitedCredits: Bool
+    public var claudeBilling: ClaudeBilling? = nil
 }
 
 public func stableHash(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
