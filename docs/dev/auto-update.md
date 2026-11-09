@@ -39,7 +39,7 @@
 )
 ```
 
-2026-11-09 用户已明确授权将专用更新签名私钥存入 GitHub Actions Secret 并发布一次。已核对私钥对应应用内嵌公钥，将其存入 `SandyKidYao/a-watcher` 的 `SPARKLE_PRIVATE_KEY`，并删除权限受限的临时导出文件。私钥未写入仓库或日志。本次计划发布 v0.7.0，流水线须完成全部签名检查后方可上传产物。
+2026-11-09 用户已明确授权将专用更新签名私钥存入 GitHub Actions Secret 并发布一次。已核对私钥对应应用内嵌公钥，将其存入 `SandyKidYao/a-watcher` 的 `SPARKLE_PRIVATE_KEY`，并删除权限受限的临时导出文件。私钥未写入仓库或日志。[v0.7.0](https://github.com/SandyKidYao/a-watcher/releases/tag/v0.7.0) 已发布，流水线完成全部签名检查后上传产物。
 
 ## 发布流水线
 
@@ -61,6 +61,14 @@
 - 通过 `--smoke-seconds 5` 在正常桌面会话启动并自行退出，退出码为 0，验证打包框架可加载；该模式不启动更新器。外层受限沙箱内直接运行 AppKit 退出码为 134，随后在正常桌面会话验证成功。
 - shell 语法、plist 与 diff 空白检查通过。
 
-发布前仍需在真实稳定 Release 上完成一次“较旧安装 → 检查更新 → 下载 → 安装 → 重启”的完整验收，并验证安装目录不可写、网络不可用、取消与跳过更新等交互。本地签名、启动与脚本检查不能冒充鼠标、键盘或 VoiceOver 验收。
+发布后复验（2026-11-09）：
+
+- 发布源码提交：`4cefae5b310e406c611bacb55c2bf0c723ac7deb`，稳定 tag：`v0.7.0`。
+- [Release 流水线](https://github.com/SandyKidYao/a-watcher/actions/runs/42576006365) 全部成功，CI 的签名私钥 stdin 分支已经实际执行；[常规 Check 流水线](https://github.com/SandyKidYao/a-watcher/actions/runs/42576006397) 成功。
+- 通过未附加凭据的公开 HTTPS 地址下载 latest 清单与 v0.7.0 zip，以源码内可信公钥独立验证清单和安装包签名、版本、长度与具体 tag URL，全部通过。
+- 解压实际发布包后 deep / strict 签名验证通过，主程序为 arm64，版本、公钥、更新地址与强制验签设置匹配，Sparkle 授权文本存在。
+- Release 附件包含 `a-watcher-v0.7.0-macos-arm64.zip`、`appcast.xml` 和 `SHA256SUMS.txt`；发布说明已告知 0.6.0 及更早版本需要手动安装一次。
+
+仍需在后续稳定版本上完成一次“较旧安装 → 检查更新 → 下载 → 安装 → 重启”的完整验收，并验证安装目录不可写、网络不可用、取消与跳过更新等交互。首个引入更新器的 0.7.0 不会给没有更新器的旧版自动安装自身。本地签名、启动与脚本检查不能冒充鼠标、键盘或 VoiceOver 验收。
 
 参考：[Sparkle 集成](https://sparkle-project.org/documentation/)、[程序化初始化](https://sparkle-project.org/documentation/programmatic-setup/)、[配置与签名策略](https://sparkle-project.org/documentation/customization/)。
