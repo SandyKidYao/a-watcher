@@ -50,6 +50,12 @@ public actor CodexIndex {
             return (url.path, session)
         })
     }
+    public func liveStatusSeeds() -> [String: LiveStatusSeed] {
+        Dictionary(uniqueKeysWithValues: knownURLs.compactMap { url in
+            guard let file = files[url.path], !file.parser.session.id.isEmpty else { return nil }
+            return (url.path, LiveStatusSeed(session: file.parser.session, cursor: file.cursor, identity: file.identity))
+        })
+    }
     public func scanStep(days: Int = 1, calendar: Calendar = .current, now: Date = Date()) throws -> IndexSnapshot {
         if invalidated || knownURLs.isEmpty { discover(); invalidated = false }
         var budget = 4 * 1024 * 1024

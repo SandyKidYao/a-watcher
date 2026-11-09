@@ -138,7 +138,12 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                     var pending = false
                     repeat {
                         try Task.checkCancellation()
-                        let next = try await engine.scanStep(days: 1)
+                        var next = try await engine.scanStep(days: 1)
+                        if let reader = liveReaders[provider] {
+                            await reader.seedSources(await engine.liveStatusSeeds())
+                            let fresh = await reader.update(paths: [])
+                            next.sessions = SessionRecord.latest(next.sessions + snapshot(provider).sessions + fresh)
+                        }
                         readyProviders.insert(provider)
                         if provider == .codex { index = next } else { claudeIndex = next }
                         if page == .detail, detailProvider == provider { detailUsage = try await engine.snapshot(days: days).usage }
@@ -148,14 +153,13 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                 } catch is CancellationError { break }
                 catch { scanError = "\(provider.name) 本机统计更新失败"; readyProviders.insert(provider); break }
             } while rescanRequested.contains(provider) && !Task.isCancelled
-            if let reader = liveReaders[provider] { await reader.seed(await engine.sessionMap()) }
             statisticsUpdatedAt = Date()
             scanTasks[provider] = nil
             if page == .history, panelVisible { loadHistory() }
         }
     }
     func requestStatus(_ provider: AgentProvider, paths: [String]) {
-        pendingPaths[provider, default: []].formUnion(paths.filter { $0.hasSuffix(".jsonl") })
+        pendingPaths[provider, default: []].formUnion(paths)
         guard statusTasks[provider] == nil, let reader = liveReaders[provider] else { return }
         statusTasks[provider] = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
@@ -164,10 +168,12 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                 let paths = Array((pendingPaths[provider] ?? []).prefix(16))
                 pendingPaths[provider]?.subtract(paths)
                 let fresh = await reader.update(paths: paths)
-                if provider == .codex { index.sessions = fresh } else { claudeIndex.sessions = fresh }
+                let merged = SessionRecord.latest(snapshot(provider).sessions + fresh)
+                if provider == .codex { index.sessions = merged } else { claudeIndex.sessions = merged }
                 changed?(); resize?(panelHeight)
                 await Task.yield()
-            } while !(pendingPaths[provider]?.isEmpty ?? true)
+                if pendingPaths[provider]?.isEmpty ?? true, !(await reader.hasPendingUpdates) { break }
+            } while !Task.isCancelled
             statusTasks[provider] = nil
         }
     }

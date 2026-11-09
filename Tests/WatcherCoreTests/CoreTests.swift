@@ -227,6 +227,150 @@ func liveStatusUpdatesWithoutRefreshingUsage() async throws {
     try expect(unchanged.sessions.first?.status == .idle)
 }
 
+func codexLiveStatusKeepsLifecycleAcrossLargeWrites() async throws {
+    for terminal in [false, true] {
+        let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+        let dir = folder.appendingPathComponent("sessions/2026/11/09")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("rollout-session.jsonl")
+        var initial = try meta("large-write"); initial.append(10); try initial.write(to: file)
+        let now = Date()
+        var baseline = SessionRecord(id: "large-write", status: terminal ? .running : .idle, observedAt: now.addingTimeInterval(-2))
+        baseline.projectDirectory = "/synthetic/project"
+        let live = LiveStatusReader(root: folder, provider: .codex)
+        await live.seed([file.path: baseline])
+        var append = try json(["type": "event_msg", "timestamp": now.ISO8601Format(), "payload": ["type": terminal ? "task_complete" : "task_started"]]); append.append(10)
+        append.append(try json(["type": "synthetic_padding", "payload": ["text": String(repeating: "x", count: 100_000)]])); append.append(10)
+        let handle = try FileHandle(forWritingTo: file); try handle.seekToEnd(); try handle.write(contentsOf: append); try handle.close()
+        let result = await live.update(paths: [file.path], now: now)
+        try expect(result.first?.status == (terminal ? .idle : .running))
+    }
+}
+
+func liveDirectoryEventsDiscoverNewSessions() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions/2026/11/09")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("new.jsonl")
+    var content = try meta("directory-event"); content.append(10)
+    content.append(try json(["type": "event_msg", "timestamp": Date().ISO8601Format(), "payload": ["type": "task_started"]])); content.append(10)
+    try content.write(to: file)
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    let result = await live.update(paths: [dir.path])
+    try expect(result.first?.id == "directory-event" && result.first?.status == .running)
+}
+
+func liveCursorsDrainBurstsAndPreservePartialLines() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("burst.jsonl")
+    var initial = try meta("burst"); initial.append(10); try initial.write(to: file)
+    let engine = try CodexIndex(root: folder, database: folder.appendingPathComponent("index.sqlite"))
+    _ = try await engine.scanStep()
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    await live.seedSources(await engine.liveStatusSeeds())
+    let start = Date()
+    var append = try json(["type": "event_msg", "timestamp": start.ISO8601Format(), "payload": ["type": "task_started"]]); append.append(10)
+    for _ in 0..<6 {
+        append.append(try json(["type": "synthetic_padding", "payload": ["text": String(repeating: "x", count: 500_000)]])); append.append(10)
+    }
+    let ended = try json(["type": "event_msg", "timestamp": start.addingTimeInterval(1).ISO8601Format(), "payload": ["type": "task_complete"]])
+    append.append(ended) // Intentionally unfinished JSONL record.
+    var handle = try FileHandle(forWritingTo: file); try handle.seekToEnd(); try handle.write(contentsOf: append); try handle.close()
+    var result = await live.update(paths: [file.path], now: start.addingTimeInterval(2))
+    for _ in 0..<10 { if !(await live.hasPendingUpdates) { break }; result = await live.update(paths: [], now: start.addingTimeInterval(2)) }
+    let pending = await live.hasPendingUpdates; try expect(!pending); try expect(result.first?.status == .running)
+    // An hourly snapshot cannot rewind the live cursor to its earlier EOF.
+    await live.seedSources(await engine.liveStatusSeeds())
+    handle = try FileHandle(forWritingTo: file); try handle.seekToEnd(); try handle.write(contentsOf: Data([10])); try handle.close()
+    result = await live.update(paths: [file.path], now: start.addingTimeInterval(2))
+    try expect(result.first?.status == .idle)
+    let usage = try await engine.snapshot().usage.tokens.total; try expect(usage == 0)
+}
+
+func liveDiscoveryDrainsAllFilesAndResetsReplacedLogs() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let now = Date()
+    for i in 0..<37 {
+        var content = try meta("session-\(i)"); content.append(10)
+        content.append(try json(["type": "event_msg", "timestamp": now.ISO8601Format(), "payload": ["type": "task_started"]])); content.append(10)
+        try content.write(to: dir.appendingPathComponent("\(i).jsonl"))
+    }
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    var result = await live.update(paths: [folder.path], now: now)
+    for _ in 0..<10 { if !(await live.hasPendingUpdates) { break }; result = await live.update(paths: [], now: now) }
+    try expect(result.count == 37); let pending = await live.hasPendingUpdates; try expect(!pending)
+    let file = dir.appendingPathComponent("0.jsonl")
+    var replacement = try meta("replacement"); replacement.append(10)
+    replacement.append(try json(["type": "event_msg", "timestamp": now.ISO8601Format(), "payload": ["type": "task_complete"]])); replacement.append(10)
+    try replacement.write(to: file, options: .atomic)
+    result = await live.update(paths: [file.path], now: now)
+    try expect(result.contains { $0.id == "replacement" && $0.status == .idle })
+    try expect(!result.contains { $0.id == "session-0" })
+}
+
+func sessionMergingKeepsFreshLiveEvidence() throws {
+    let now = Date()
+    let stale = SessionRecord(id: "same", status: .idle, observedAt: now.addingTimeInterval(-60))
+    let fresh = SessionRecord(id: "same", status: .running, observedAt: now)
+    let other = SessionRecord(id: "new-session", status: .running, observedAt: now)
+    let result = SessionRecord.latest([fresh, other, stale], now: now)
+    try expect(result.count == 2); try expect(result.first { $0.id == "same" }?.status == .running)
+}
+
+private actor ObservedFileEvents {
+    private var pending: Set<String> = []
+    func add(_ paths: [String]) { pending.formUnion(paths) }
+    func take() -> [String] { let paths = Array(pending); pending.removeAll(); return paths }
+}
+
+func nativeFileEventsReachLiveStatusReader() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let events = ObservedFileEvents()
+    let watcher = try SourceWatcher(root: folder) { paths in Task { await events.add(paths) } }
+    defer { watcher.stop() }
+    let dir = folder.appendingPathComponent("sessions/2026/11/09")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    var content = try meta("native-event"); content.append(10)
+    content.append(try json(["type": "event_msg", "timestamp": Date().ISO8601Format(), "payload": ["type": "task_started"]])); content.append(10)
+    try content.write(to: dir.appendingPathComponent("native.jsonl"))
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    for _ in 0..<60 {
+        let paths = await events.take()
+        let observed = await live.update(paths: paths)
+        if observed.contains(where: { $0.id == "native-event" && $0.status == .running }) { return }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    throw CheckFailure("Native filesystem events did not reach the live session reader")
+}
+
+func skippedLiveRecordsRemainUnknown() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("oversized.jsonl")
+    var initial = try meta("oversized"); initial.append(10); try initial.write(to: file)
+    let engine = try CodexIndex(root: folder, database: folder.appendingPathComponent("index.sqlite"))
+    _ = try await engine.scanStep()
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    await live.seedSources(await engine.liveStatusSeeds())
+    let now = Date()
+    var append = try json(["type": "event_msg", "timestamp": now.ISO8601Format(), "payload": ["type": "task_started"]]); append.append(10)
+    append.append(try json(["type": "event_msg", "timestamp": now.addingTimeInterval(1).ISO8601Format(), "payload": ["type": "task_complete", "last_agent_message": String(repeating: "x", count: 1_100_000)]])); append.append(10)
+    let handle = try FileHandle(forWritingTo: file); try handle.seekToEnd(); try handle.write(contentsOf: append); try handle.close()
+    var result = await live.update(paths: [file.path], now: now.addingTimeInterval(2))
+    try expect(result.first?.status == .unknown)
+    // The usage reader accepts up to 2 MiB per line and can safely refine the
+    // exact same cursor once it has decoded the previously skipped completion.
+    _ = try await engine.scanStep(now: now.addingTimeInterval(2))
+    await live.seedSources(await engine.liveStatusSeeds())
+    result = await live.update(paths: [], now: now.addingTimeInterval(2))
+    try expect(result.first?.status == .idle)
+}
+
 func completionTrackerSeedsWithoutHistoricalNotifications() throws {
     let now = Date(); var tracker = ActivityTracker()
     let idle = SessionRecord(id:"old",status:.idle,observedAt:now)
@@ -543,6 +687,16 @@ func claudeModernSpendAndWindowFormats() throws {
 @main struct Checks {
     static func main() async {
         var failures = 0
+        do { try await skippedLiveRecordsRemainUnknown(); print("PASS skippedLiveRecordsRemainUnknown") } catch { failures += 1; print("FAIL skippedLiveRecordsRemainUnknown: \(error)") }
+        let nativeEvents = CommandLine.arguments.contains("--native-file-events")
+        if nativeEvents {
+            do { try await nativeFileEventsReachLiveStatusReader(); print("PASS nativeFileEventsReachLiveStatusReader") } catch { failures += 1; print("FAIL nativeFileEventsReachLiveStatusReader: \(error)") }
+        }
+        do { try await liveCursorsDrainBurstsAndPreservePartialLines(); print("PASS liveCursorsDrainBurstsAndPreservePartialLines") } catch { failures += 1; print("FAIL liveCursorsDrainBurstsAndPreservePartialLines: \(error)") }
+        do { try await liveDiscoveryDrainsAllFilesAndResetsReplacedLogs(); print("PASS liveDiscoveryDrainsAllFilesAndResetsReplacedLogs") } catch { failures += 1; print("FAIL liveDiscoveryDrainsAllFilesAndResetsReplacedLogs: \(error)") }
+        do { try sessionMergingKeepsFreshLiveEvidence(); print("PASS sessionMergingKeepsFreshLiveEvidence") } catch { failures += 1; print("FAIL sessionMergingKeepsFreshLiveEvidence: \(error)") }
+        do { try await codexLiveStatusKeepsLifecycleAcrossLargeWrites(); print("PASS codexLiveStatusKeepsLifecycleAcrossLargeWrites") } catch { failures += 1; print("FAIL codexLiveStatusKeepsLifecycleAcrossLargeWrites: \(error)") }
+        do { try await liveDirectoryEventsDiscoverNewSessions(); print("PASS liveDirectoryEventsDiscoverNewSessions") } catch { failures += 1; print("FAIL liveDirectoryEventsDiscoverNewSessions: \(error)") }
         do { try claudeKeychainOutputDecodes(); print("PASS claudeKeychainOutputDecodes") } catch { failures += 1; print("FAIL claudeKeychainOutputDecodes: \(error)") }
         do { try claudeModernSpendAndWindowFormats(); print("PASS claudeModernSpendAndWindowFormats") } catch { failures += 1; print("FAIL claudeModernSpendAndWindowFormats: \(error)") }
         do { try await claudeClientCachesAndInvalidatesCredentials(); print("PASS claudeClientCachesAndInvalidatesCredentials") } catch { failures += 1; print("FAIL claudeClientCachesAndInvalidatesCredentials: \(error)") }
@@ -581,7 +735,7 @@ func claudeModernSpendAndWindowFormats() throws {
         do { try await projectAnchorSurvivesIndexRestart(); print("PASS projectAnchorSurvivesIndexRestart") } catch { failures += 1; print("FAIL projectAnchorSurvivesIndexRestart: \(error)") }
         do { try staleOrUnknownEvidenceShowsIdleIcon(); print("PASS staleOrUnknownEvidenceShowsIdleIcon") } catch { failures += 1; print("FAIL staleOrUnknownEvidenceShowsIdleIcon: \(error)") }
         do { try workingCountExcludesWaitingAndStaleSessions(); print("PASS workingCountExcludesWaitingAndStaleSessions") } catch { failures += 1; print("FAIL workingCountExcludesWaitingAndStaleSessions: \(error)") }
-        print("\(38) checks, \(failures) failures")
+        print("\(44 + (nativeEvents ? 1 : 0)) checks, \(failures) failures")
         if failures > 0 { exit(1) }
     }
 }
