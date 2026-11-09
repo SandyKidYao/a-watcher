@@ -42,7 +42,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     private var claudeQuotaCheckedAt = Date.distantPast
     let quotaClient: CodexQuotaClient
     private var engines: [AgentProvider: CodexIndex] = [:]
-    private var watchers: [SourceWatcher] = []
+    private var watchers: [AgentProvider: SourceWatcher] = [:]
     private var liveReaders: [AgentProvider: LiveStatusReader] = [:]
     private var statusTasks: [AgentProvider: Task<Void, Never>] = [:]
     private var pendingPaths: [AgentProvider: Set<String>] = [:]
@@ -108,12 +108,12 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                     let watched = provider == .codex ? source : source.appendingPathComponent("projects")
                     if FileManager.default.fileExists(atPath: watched.path) {
                         do {
-                            watchers.append(try SourceWatcher(root: watched) { [weak self] paths in
+                            watchers[provider] = try SourceWatcher(root: watched) { [weak self] paths in
                                 Task { @MainActor [weak self] in
                                     self?.requestStatus(provider, paths: paths)
                                     if provider == .codex, paths.contains(where: { $0.hasSuffix("auth.json") }) { self?.refreshQuota() }
                                 }
-                            })
+                            }
                         } catch { scanError = "\(provider.name) 自动监听不可用，可手动刷新" }
                     }
                     requestScan(provider)
@@ -142,6 +142,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                         if let reader = liveReaders[provider] {
                             await reader.seedSources(await engine.liveStatusSeeds())
                             let fresh = await reader.update(paths: [])
+                            watchers[provider]?.watchFiles(await reader.takeWatchPaths())
                             next.sessions = SessionRecord.latest(next.sessions + snapshot(provider).sessions + fresh)
                         }
                         readyProviders.insert(provider)
@@ -168,6 +169,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                 let paths = Array((pendingPaths[provider] ?? []).prefix(16))
                 pendingPaths[provider]?.subtract(paths)
                 let fresh = await reader.update(paths: paths)
+                watchers[provider]?.watchFiles(await reader.takeWatchPaths())
                 let merged = SessionRecord.latest(snapshot(provider).sessions + fresh)
                 if provider == .codex { index.sessions = merged } else { claudeIndex.sessions = merged }
                 changed?(); resize?(panelHeight)
@@ -291,7 +293,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
             NSWorkspace.shared.openApplication(at: application, configuration: .init())
         } else { NSWorkspace.shared.open(URL(fileURLWithPath: session.projectDirectory ?? (session.directory.isEmpty ? (session.provider == .codex ? root.path : claudeRoot.path) : session.directory))) }
     }
-    func stop() { historyTask?.cancel(); scanTasks.values.forEach { $0.cancel() }; statusTasks.values.forEach { $0.cancel() }; quotaTask?.cancel(); cadence?.cancel(); watchers.forEach { $0.stop() }; watchers.removeAll(); lifecycle = nil }
+    func stop() { historyTask?.cancel(); scanTasks.values.forEach { $0.cancel() }; statusTasks.values.forEach { $0.cancel() }; quotaTask?.cancel(); cadence?.cancel(); watchers.values.forEach { $0.stop() }; watchers.removeAll(); lifecycle = nil }
     private func scheduleRefresh() {
         cadence = Task { [weak self] in
             while !Task.isCancelled {

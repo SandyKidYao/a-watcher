@@ -371,6 +371,45 @@ func skippedLiveRecordsRemainUnknown() async throws {
     try expect(result.first?.status == .idle)
 }
 
+func nativeOpenLogAppendsRemainObservable() async throws {
+    let folder = try temporary(); defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("held-open.jsonl")
+    var initial = try meta("held-open"); initial.append(10)
+    initial.append(try json(["type": "event_msg", "timestamp": Date().ISO8601Format(), "payload": ["type": "task_started"]])); initial.append(10)
+    try initial.write(to: file)
+    let engine = try CodexIndex(root: folder, database: folder.appendingPathComponent("index.sqlite"))
+    _ = try await engine.scanStep()
+    let events = ObservedFileEvents()
+    let watcher = try SourceWatcher(root: folder) { paths in Task { await events.add(paths) } }
+    defer { watcher.stop() }
+    let live = LiveStatusReader(root: folder, provider: .codex)
+    await live.seedSources(await engine.liveStatusSeeds())
+    let writer = try FileHandle(forWritingTo: file); defer { try? writer.close() }
+    watcher.watchFiles(await live.takeWatchPaths())
+    try writer.seekToEnd()
+    func append(_ type: String) throws {
+        var row = try json(["type": "event_msg", "timestamp": Date().ISO8601Format(), "payload": ["type": type]])
+        row.append(10); try writer.write(contentsOf: row)
+    }
+    func observes(_ status: SessionStatus) async throws -> Bool {
+        for _ in 0..<60 {
+            let result = await live.update(paths: await events.take())
+            if result.first?.status == status { return true }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+    try append("task_complete")
+    let first = try await observes(.idle); try expect(first)
+    try await Task.sleep(for: .seconds(1))
+    _ = await live.update(paths: await events.take())
+    try append("task_started")
+    let second = try await observes(.running)
+    try expect(second)
+}
+
 func completionTrackerSeedsWithoutHistoricalNotifications() throws {
     let now = Date(); var tracker = ActivityTracker()
     let idle = SessionRecord(id:"old",status:.idle,observedAt:now)
@@ -690,6 +729,7 @@ func claudeModernSpendAndWindowFormats() throws {
         do { try await skippedLiveRecordsRemainUnknown(); print("PASS skippedLiveRecordsRemainUnknown") } catch { failures += 1; print("FAIL skippedLiveRecordsRemainUnknown: \(error)") }
         let nativeEvents = CommandLine.arguments.contains("--native-file-events")
         if nativeEvents {
+            do { try await nativeOpenLogAppendsRemainObservable(); print("PASS nativeOpenLogAppendsRemainObservable") } catch { failures += 1; print("FAIL nativeOpenLogAppendsRemainObservable: \(error)") }
             do { try await nativeFileEventsReachLiveStatusReader(); print("PASS nativeFileEventsReachLiveStatusReader") } catch { failures += 1; print("FAIL nativeFileEventsReachLiveStatusReader: \(error)") }
         }
         do { try await liveCursorsDrainBurstsAndPreservePartialLines(); print("PASS liveCursorsDrainBurstsAndPreservePartialLines") } catch { failures += 1; print("FAIL liveCursorsDrainBurstsAndPreservePartialLines: \(error)") }
@@ -735,7 +775,7 @@ func claudeModernSpendAndWindowFormats() throws {
         do { try await projectAnchorSurvivesIndexRestart(); print("PASS projectAnchorSurvivesIndexRestart") } catch { failures += 1; print("FAIL projectAnchorSurvivesIndexRestart: \(error)") }
         do { try staleOrUnknownEvidenceShowsIdleIcon(); print("PASS staleOrUnknownEvidenceShowsIdleIcon") } catch { failures += 1; print("FAIL staleOrUnknownEvidenceShowsIdleIcon: \(error)") }
         do { try workingCountExcludesWaitingAndStaleSessions(); print("PASS workingCountExcludesWaitingAndStaleSessions") } catch { failures += 1; print("FAIL workingCountExcludesWaitingAndStaleSessions: \(error)") }
-        print("\(44 + (nativeEvents ? 1 : 0)) checks, \(failures) failures")
+        print("\(44 + (nativeEvents ? 2 : 0)) checks, \(failures) failures")
         if failures > 0 { exit(1) }
     }
 }

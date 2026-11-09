@@ -18,17 +18,23 @@ public actor LiveStatusReader {
     private var cursors: [String: ReadCursor] = [:]
     private var identities: [String: String] = [:]
     private var queued: Set<String> = []
+    private var watchPaths: Set<String> = []
+    public func takeWatchPaths() -> [String] {
+        let paths = Array(watchPaths); watchPaths.removeAll(); return paths
+    }
     public var hasPendingUpdates: Bool { !queued.isEmpty }
     public init(root: URL, provider: AgentProvider) { self.root = root.resolvingSymlinksInPath(); self.provider = provider }
     public func seed(_ values: [String: SessionRecord]) {
         for (path, value) in values {
             let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            if identities[key] == nil { watchPaths.insert(key) }
             if sessions[key] == nil || sessions[key]!.observedAt < value.observedAt { sessions[key] = value }
         }
     }
     public func seedSources(_ values: [String: LiveStatusSeed]) {
         for (path, value) in values {
             let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            if identities[key] == nil { watchPaths.insert(key) }
             // An older accounting scan must never rewind a live cursor/state.
             if let current = cursors[key], identities[key] == value.identity,
                current.offset > value.cursor.offset || (current.offset == value.cursor.offset && sessions[key]?.status != .unknown) { continue }
@@ -52,6 +58,7 @@ public actor LiveStatusReader {
                     return
                 }
                 let identity = "\(attributes[.systemNumber] ?? ""):\(attributes[.systemFileNumber] ?? "")"
+                if identities[path] != identity { watchPaths.insert(path) }
                 if let old = identities[path], old != identity || size < (cursors[path]?.offset ?? 0) {
                     sessions.removeValue(forKey: path); cursors.removeValue(forKey: path)
                 }
@@ -88,7 +95,7 @@ public actor LiveStatusReader {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         let bases = (provider == .codex ? ["sessions", "archived_sessions"] : ["projects"]).map { root.appendingPathComponent($0) }
         guard url.path == root.path || bases.contains(where: { url.path == $0.path || url.path.hasPrefix($0.path + "/") }) else { return }
-        if url.pathExtension == "jsonl" { queued.insert(url.path); return }
+        if url.pathExtension == "jsonl" { queued.insert(url.path); watchPaths.insert(url.path); return }
         // Directory/drop/root events trigger metadata discovery, never a usage
         // reindex. Do not traverse unrelated Codex plugins, caches or auth files.
         for base in bases where url.path == root.path || base.path == url.path || base.path.hasPrefix(url.path + "/") || url.path.hasPrefix(base.path + "/") {

@@ -5,5 +5,5 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash Scripts/check.sh
+      - run: bash Scripts/check.sh --native-file-events
       - run: bash Scripts/build.sh

@@ -44,7 +44,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${TAG#v}" Resources/Info.plist
 
       - name: Checks
-        run: bash Scripts/check.sh
+        run: bash Scripts/check.sh --native-file-events
 
       - name: Build app
         run: bash Scripts/build.sh
