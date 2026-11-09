@@ -5,7 +5,7 @@ import WatcherCore
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem?
-    private var panel: NSPopover?
+    private var panel: MenuPanel?
     private var model: WatcherModel?
     private var activity = ActivityTracker()
     private var activityIcon: ActivityIconView?
@@ -45,7 +45,7 @@ import WatcherCore
         motionSubscription = MotionMonitor.shared.$enabled.dropFirst().sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateStatus() }
         }
-        model.resize = { [weak self] height in self?.panel?.contentSize = NSSize(width: self?.model?.panelWidth ?? 320, height: height) }
+        model.resize = { [weak self] height in self?.panel?.place(NSSize(width: self?.model?.panelWidth ?? 320, height: height)) }
         model.changed = { [weak self] in self?.updateStatus() }
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--export-showcase"), args.count > i + 1 {
@@ -80,11 +80,13 @@ import WatcherCore
         activityIcon?.apply(activity.acknowledge(), animate: false)
         if hadUnread { saveReceipts() }
         updateStatus()
-        let panel = NSPopover(); panel.behavior = .transient; panel.animates = false; panel.delegate = self
-        panel.contentViewController = NSHostingController(rootView: WatcherPanel(model: model))
-        panel.contentSize = NSSize(width: model.panelWidth, height: model.panelHeight)
+        let content = NSHostingController(rootView: WatcherPanel(model: model))
+        content.sizingOptions = []
+        let panel = MenuPanel(content: content)
+        panel.onClose = { [weak self, weak panel] in self?.panelDidClose(panel) }
         self.panel = panel
-        panel.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        button.highlight(true)
+        panel.show(below: button, size: NSSize(width: model.panelWidth, height: model.panelHeight))
     }
     @objc private func quit() { NSApp.terminate(nil) }
     private func updateStatus() {
@@ -94,7 +96,7 @@ import WatcherCore
         if item?.length != iconWidth + 4 { item?.length = iconWidth + 4; activityIcon?.frame.size.width = iconWidth }
         activityIcon?.apply(update)
         let note = update.unread > 0 ? "，\(update.unread) 个完成未读" : ""
-        let text = "Agent Watcher，\(update.active) 个确认工作中，\(update.attention) 个需要处理" + note + (update.mode == .uncertain ? "，部分状态待确认" : "")
+        let text = "Agent Watcher，\(update.active) 个确认工作中，\(update.attention) 个需要处理" + note
         if item?.button?.toolTip != text { item?.button?.toolTip = text; item?.button?.setAccessibilityLabel(text) }
         if update.completed > 0 { saveReceipts() }
         if let activityLog {
@@ -144,19 +146,19 @@ import WatcherCore
         }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         if panel?.isShown != true { toggle() }
-        for (name, page) in [("home", PanelPage.home), ("quota", .quota), ("usage", .usage), ("status-legend", .legend)] {
+        for (name, page) in [("home", PanelPage.home), ("detail", .detail), ("help", .help)] {
             model.navigate(page)
             try? await Task.sleep(for: .milliseconds(300))
             renderPanel(to: directory.appendingPathComponent("\(name).png"))
         }
         panel?.contentViewController?.view.window?.appearance = NSAppearance(named: .darkAqua)
         try? await Task.sleep(for: .milliseconds(300))
-        renderPanel(to: directory.appendingPathComponent("status-legend-dark.png"))
+        renderPanel(to: directory.appendingPathComponent("help-dark.png"))
         panel?.contentViewController?.view.window?.appearance = nil
-        model.showQuota(.claude)
+        model.showDetail(.claude)
         try? await Task.sleep(for: .milliseconds(300))
-        renderPanel(to: directory.appendingPathComponent("claude-quota.png"))
-        model.quotaProvider = .codex
+        renderPanel(to: directory.appendingPathComponent("claude-detail.png"))
+        model.detailProvider = .codex
         if let session = model.allSessions.first(where: { model.projectedStatus($0) == .unknown }) ?? model.allSessions.first {
             model.navigate(.session(session.key))
             try? await Task.sleep(for: .milliseconds(300))
@@ -178,9 +180,6 @@ import WatcherCore
         try? await Task.sleep(for: .milliseconds(300))
         renderPanel(to: directory.appendingPathComponent("claude-sessions.png"))
         model.selectedProvider = nil
-        model.showUsage(.claude)
-        try? await Task.sleep(for: .milliseconds(300))
-        renderPanel(to: directory.appendingPathComponent("claude-usage.png"))
         if let button = item?.button { renderView(button, to: directory.appendingPathComponent("menubar-single.png")) }
         exportIconStates(to: directory)
         model.navigate(.home)
@@ -269,9 +268,9 @@ import WatcherCore
             renderPanel(to: directory.appendingPathComponent("\(name).png"))
         }
         model.navigate(.home); await shot("home"); await shot("home-dark", dark: true)
-        model.showQuota(.claude); await shot("quota")
+        model.showDetail(.claude); await shot("detail")
         model.navigate(.history); model.applyShowcaseHistory(sources); await shot("history")
-        model.navigate(.legend); await shot("legend")
+        model.navigate(.help); await shot("help")
         exportIconStates(to: directory)
         panel?.close()
     }
@@ -308,9 +307,10 @@ import WatcherCore
     }
 }
 
-extension AppDelegate: NSPopoverDelegate {
-    func popoverDidClose(_ notification: Notification) {
-        guard let closed = notification.object as? NSPopover, closed === panel else { return }
+extension AppDelegate {
+    fileprivate func panelDidClose(_ closed: MenuPanel?) {
+        guard let closed, closed === panel else { return }
+        item?.button?.highlight(false)
         panel?.contentViewController = nil; panel = nil; model?.closed()
     }
 }

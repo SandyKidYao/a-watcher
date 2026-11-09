@@ -1,6 +1,7 @@
 import Foundation
 
-public enum ActivityMode: String, Sendable { case idle, working, completed, attention, uncertain }
+/// Menu bar icon modes. Stale or unknown evidence has no icon of its own and shows as idle.
+public enum ActivityMode: String, Sendable { case idle, working, completed, attention }
 public struct ActivityUpdate: Sendable {
     public var mode: ActivityMode
     public var active: Int
@@ -8,6 +9,10 @@ public struct ActivityUpdate: Sendable {
     public var unread: Int
     public var started: Bool
     public var completed: Int
+    public init(mode: ActivityMode, active: Int = 0, attention: Int = 0, unread: Int = 0, started: Bool = false, completed: Int = 0) {
+        self.mode = mode; self.active = active; self.attention = attention
+        self.unread = unread; self.started = started; self.completed = completed
+    }
 }
 public struct CompletionReceipts: Codable, Sendable {
     public var unread: Int = 0
@@ -60,8 +65,7 @@ public struct ActivityTracker: Sendable {
     public func current(now: Date = Date()) -> ActivityUpdate {
         let attention = observations.values.filter { $0.status.needsAttention || ($0.status == .error && now.timeIntervalSince($0.observedAt) < 180) }.count
         let active = observations.values.filter { $0.status.isWorking && now.timeIntervalSince($0.observedAt) < 180 }.count
-        let uncertain = observations.values.contains { $0.status == .unknown || ($0.status.isActive && !$0.status.needsAttention && now.timeIntervalSince($0.observedAt) >= 180) }
-        let mode: ActivityMode = !initialized ? .uncertain : attention > 0 ? .attention : active > 0 ? .working : receipts.unread > 0 ? .completed : uncertain ? .uncertain : .idle
+        let mode: ActivityMode = attention > 0 ? .attention : active > 0 ? .working : receipts.unread > 0 ? .completed : .idle
         return ActivityUpdate(mode: mode, active: active, attention: attention, unread: receipts.unread, started: false, completed: 0)
     }
 }

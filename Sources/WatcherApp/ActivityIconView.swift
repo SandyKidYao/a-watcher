@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 import WatcherCore
 
 /// Working session count + continuous native waveform; completion stays unread.
@@ -9,7 +10,7 @@ import WatcherCore
     private let mark = CAShapeLayer(), badge = CAShapeLayer(), pulse = CAShapeLayer(), attentionBadge = CAShapeLayer()
     private let count = CATextLayer()
     private var active = 0, attention = 0
-    private var mode: ActivityMode = .uncertain
+    private var mode: ActivityMode = .idle
     private var unread = 0
     private var configured = false
     static func width(for active: Int) -> CGFloat { active == 0 ? 24 : active < 10 ? 42 : active < 100 ? 50 : 62 }
@@ -71,7 +72,7 @@ import WatcherCore
         for (i, bar) in bars.enumerated() {
             bar.frame = CGRect(x: 0, y: 0, width: 20, height: 22)
             bar.lineWidth = active > 0 ? 2.2 : 1.7
-            let height: CGFloat = active == 0 && mode == .idle ? 3 : [8, 16, 10][i]
+            let height: CGFloat = [8, 16, 10][i] // idle keeps the full static waveform, without count or motion
             let x = CGFloat(3 + i * 6), y = (bounds.height - height) / 2
             let path = CGMutablePath(); path.move(to: CGPoint(x: x, y: y)); path.addLine(to: CGPoint(x: x, y: y + height))
             bar.path = path; bar.strokeColor = ink
@@ -90,8 +91,6 @@ import WatcherCore
             path.move(to: CGPoint(x: 3, y: 10)); path.addLine(to: CGPoint(x: 9, y: 4)); path.addLine(to: CGPoint(x: 17, y: 15.5))
         case .attention:
             path.move(to: CGPoint(x: 11, y: 17)); path.addLine(to: CGPoint(x: 11, y: 8)); path.move(to: CGPoint(x: 11, y: 4)); path.addLine(to: CGPoint(x: 11, y: 4.2))
-        case .uncertain:
-            path.move(to: CGPoint(x: 7, y: 16)); path.addCurve(to: CGPoint(x: 15, y: 15), control1: CGPoint(x: 8, y: 21), control2: CGPoint(x: 18, y: 20)); path.addCurve(to: CGPoint(x: 11, y: 8), control1: CGPoint(x: 14, y: 12), control2: CGPoint(x: 11, y: 12)); path.move(to: CGPoint(x: 11, y: 4)); path.addLine(to: CGPoint(x: 11, y: 4.2))
         default: break
         }
         mark.path = path; mark.strokeColor = mode == .completed ? success : mode == .attention ? attention : ink; mark.strokeEnd = 1
@@ -100,5 +99,31 @@ import WatcherCore
         pulse.path = CGPath(roundedRect: CGRect(x: 1, y: 1, width: 20, height: 20), cornerWidth: 6, cornerHeight: 6, transform: nil)
         pulse.strokeColor = success; pulse.opacity = 0
         CATransaction.commit()
+    }
+}
+
+extension ActivityIconView {
+    /// Still image of one icon state, rendered the same way as the exported icons.
+    static func snapshot(_ state: ActivityUpdate, dark: Bool, scale: CGFloat = 2) -> NSImage {
+        let width = width(for: state.active)
+        let image = NSImage(size: NSSize(width: width, height: 22))
+        let icon = ActivityIconView(frame: NSRect(x: 0, y: 0, width: width, height: 22))
+        icon.appearance = NSAppearance(named: dark ? .darkAqua : .aqua); icon.apply(state, animate: false)
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(width * scale), pixelsHigh: Int(22 * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return image }
+        context.cgContext.scaleBy(x: scale, y: scale)
+        icon.layer?.render(in: context.cgContext)
+        bitmap.size = image.size; image.addRepresentation(bitmap)
+        return image
+    }
+}
+
+/// Static copy of the menu bar icon for the help page; never animates.
+struct MenuIconSample: View {
+    let state: ActivityUpdate
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        Image(nsImage: ActivityIconView.snapshot(state, dark: scheme == .dark))
+            .frame(width: ActivityIconView.width(for: state.active), height: 22)
     }
 }

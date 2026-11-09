@@ -40,12 +40,12 @@ a-watcher 把这些答案收进菜单栏的一个小图标里，不用来回切�
 Codex 与 Claude Code 的近期会话按项目列出，状态一目了然：正在工作、等待批准、等待输入、本轮完成。可以按 Agent 筛选，点开查看详情。
 
 **账户额度一眼可见**
-面板底部用圆环显示每个 Agent 的 7 日剩余额度，悬停看精确数值，点开看 5 小时与 7 日窗口、重置时间等详情。
+面板底部用圆环显示每个 Agent 的 7 日剩余额度，悬停看精确数值；点开详情页，同一页查看 5 小时与 7 日窗口、重置时间和这台 Mac 的本机用量。菜单栏图标各形态的含义见面板里的帮助页。
 
 <p align="center">
-  <img src="docs/images/quota.png" width="320" alt="账户额度详情">
+  <img src="docs/images/detail.png" width="320" alt="详情页">
   &nbsp;&nbsp;
-  <img src="docs/images/legend.png" width="320" alt="状态说明">
+  <img src="docs/images/help.png" width="320" alt="帮助页">
 </p>
 
 **今日用量与年度热力图**

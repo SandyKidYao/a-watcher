@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import WatcherCore
 
-enum PanelPage: Equatable { case home, quota, usage, history, legend, session(String) }
+enum PanelPage: Equatable { case home, detail, history, help, session(String) }
 
 @MainActor final class WatcherModel: ObservableObject {
     @Published var historyScope: AgentProvider?
@@ -20,8 +20,8 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     @Published var index = IndexSnapshot()
     @Published var claudeIndex = IndexSnapshot()
     @Published var selectedProvider: AgentProvider?
-    @Published var usageProvider = AgentProvider.codex
-    @Published var quotaProvider = AgentProvider.codex
+    /// Agent shown on the detail page: account quota and local usage together.
+    @Published var detailProvider = AgentProvider.codex
     @Published var readyProviders: Set<AgentProvider> = []
     @Published var quota: QuotaSnapshot?
     @Published var claudeQuota: QuotaSnapshot?
@@ -75,7 +75,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     var filteredSessions: [SessionRecord] { allSessions.filter { selectedProvider == nil || $0.provider == selectedProvider } }
     var visibleSessions: ArraySlice<SessionRecord> { filteredSessions.prefix(showAllSessions ? filteredSessions.count : 5) }
     var panelWidth: CGFloat { page == .history ? 760 : 320 }
-    var panelHeight: CGFloat { page == .history ? 540 : page == .legend ? 520 : page == .home ? CGFloat(86 + max(1, min(visibleSessions.count, showAllSessions ? 9 : 5)) * 36 + (isIndexing ? 24 : 0)) : 460 }
+    var panelHeight: CGFloat { page == .history ? 540 : page == .help ? 560 : page == .detail ? 520 : page == .home ? CGFloat(86 + max(1, min(visibleSessions.count, showAllSessions ? 9 : 5)) * 36 + (isIndexing ? 24 : 0)) : 460 }
     var todayTokenText: String {
         guard index.usage.filesTotal + claudeIndex.usage.filesTotal > 0 else { return "—" }
         return compactNumber(index.usage.tokens.total + claudeIndex.usage.tokens.total)
@@ -141,7 +141,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
                         let next = try await engine.scanStep(days: 1)
                         readyProviders.insert(provider)
                         if provider == .codex { index = next } else { claudeIndex = next }
-                        if page == .usage, usageProvider == provider { detailUsage = try await engine.snapshot(days: days).usage }
+                        if page == .detail, detailProvider == provider { detailUsage = try await engine.snapshot(days: days).usage }
                         changed?(); resize?(panelHeight); pending = next.usage.indexing
                         if pending { try await Task.sleep(for: .milliseconds(80)) }
                     } while pending
@@ -173,16 +173,15 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     }
     func selectDays(_ value: Int) {
         days = value
-        let provider = usageProvider
+        let provider = detailProvider
         guard let engine = engines[provider] else { return }
         Task {
-            if let result = try? await engine.snapshot(days: value), days == value, usageProvider == provider { detailUsage = result.usage }
+            if let result = try? await engine.snapshot(days: value), days == value, detailProvider == provider { detailUsage = result.usage }
         }
     }
-    func showUsage(_ provider: AgentProvider) { usageProvider = provider; navigate(.usage) }
     func accountQuota(_ provider: AgentProvider) -> QuotaSnapshot? { provider == .codex ? quota : claudeQuota }
     func accountQuotaError(_ provider: AgentProvider) -> QuotaFailure? { provider == .codex ? quotaError : claudeQuotaError }
-    func showQuota(_ provider: AgentProvider) { quotaProvider = provider; navigate(.quota) }
+    func showDetail(_ provider: AgentProvider) { detailProvider = provider; navigate(.detail) }
     func refreshQuota(manual: Bool = false) {
         guard !offline, quotaTask == nil else { return }
         quotaBusy = true
@@ -216,7 +215,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     }
     func opened() {
         panelVisible = true
-        page = .home; showAllSessions = false
+        page = .home; showAllSessions = false; days = 1
         refreshQuota()
         resize?(panelHeight)
     }
@@ -224,7 +223,7 @@ enum PanelPage: Equatable { case home, quota, usage, history, legend, session(St
     func navigate(_ page: PanelPage) {
         if page != .history { historyTask?.cancel(); historyLoading = false }
         self.page = page
-        if page == .usage { detailUsage = snapshot(usageProvider).usage; selectDays(1) }
+        if page == .detail { detailUsage = snapshot(detailProvider).usage; selectDays(days) }
         if page == .history, panelVisible { loadHistory() }
         resize?(panelHeight)
     }

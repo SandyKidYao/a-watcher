@@ -262,10 +262,20 @@ func completionTrackerDistinguishesFailureAndRestoresUnread() throws {
     try expect(error.completed == 0); try expect(error.mode == .attention)
     var receipts = CompletionReceipts(); receipts.unread = 2
     var restored = ActivityTracker(receipts:receipts)
-    let cold = restored.ingest([],bootstrapping:true,now:now); try expect(cold.mode == .uncertain)
+    let cold = restored.ingest([],bootstrapping:true,now:now); try expect(cold.mode == .completed)
     let ready = restored.ingest([],bootstrapping:false,now:now); try expect(ready.mode == .completed); try expect(ready.unread == 2)
 }
 
+func staleOrUnknownEvidenceShowsIdleIcon() throws {
+    let now = Date(); var tracker = ActivityTracker()
+    let cold = tracker.ingest([SessionRecord(id: "boot", status: .running, observedAt: now)], bootstrapping: true, now: now)
+    try expect(cold.mode == .working); try expect(cold.active == 1)
+    let stale = SessionRecord(id: "stale", status: .running, observedAt: now.addingTimeInterval(-600))
+    let unknown = SessionRecord(id: "unknown", status: .unknown, observedAt: now)
+    var fresh = ActivityTracker()
+    let update = fresh.ingest([stale, unknown], bootstrapping: false, now: now)
+    try expect(update.mode == .idle); try expect(update.active == 0); try expect(update.attention == 0)
+}
 func workingCountExcludesWaitingAndStaleSessions() throws {
     let now = Date(); var tracker = ActivityTracker()
     let states: [SessionStatus] = [.running, .tool, .waitingInput, .waitingApproval, .idle, .unknown, .error]
@@ -569,8 +579,9 @@ func claudeModernSpendAndWindowFormats() throws {
         do { try claudeProjectStaysAnchoredWhenDirectoryChanges(); print("PASS claudeProjectStaysAnchoredWhenDirectoryChanges") } catch { failures += 1; print("FAIL claudeProjectStaysAnchoredWhenDirectoryChanges: \(error)") }
         do { try await cachedProjectMetadataRecoversFromInitialDirectory(); print("PASS cachedProjectMetadataRecoversFromInitialDirectory") } catch { failures += 1; print("FAIL cachedProjectMetadataRecoversFromInitialDirectory: \(error)") }
         do { try await projectAnchorSurvivesIndexRestart(); print("PASS projectAnchorSurvivesIndexRestart") } catch { failures += 1; print("FAIL projectAnchorSurvivesIndexRestart: \(error)") }
+        do { try staleOrUnknownEvidenceShowsIdleIcon(); print("PASS staleOrUnknownEvidenceShowsIdleIcon") } catch { failures += 1; print("FAIL staleOrUnknownEvidenceShowsIdleIcon: \(error)") }
         do { try workingCountExcludesWaitingAndStaleSessions(); print("PASS workingCountExcludesWaitingAndStaleSessions") } catch { failures += 1; print("FAIL workingCountExcludesWaitingAndStaleSessions: \(error)") }
-        print("\(37) checks, \(failures) failures")
+        print("\(38) checks, \(failures) failures")
         if failures > 0 { exit(1) }
     }
 }

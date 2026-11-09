@@ -18,23 +18,25 @@ struct WatcherPanel: View {
             }
             switch model.page {
             case .home: home
-            case .quota: quotaDetails
-            case .usage: usageDetails
+            case .detail: details
             case .history: UsageHistoryView(model: model)
-            case .legend: statusLegend
+            case .help: help
             case .session(let key): sessionDetails(key)
             }
             Spacer(minLength: 0)
             footer
         }.font(.system(size: 12)).frame(width: model.panelWidth, height: model.panelHeight, alignment: .top)
-            .background(.background).transaction { $0.animation = nil }
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5) }
+            .transaction { $0.animation = nil }
             .onExitCommand { if model.page != .home { model.navigate(.home) } else { NSApp.keyWindow?.close() } }
     }
     private var home: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 Text("会话 \(model.filteredSessions.count)").foregroundStyle(secondary).font(.system(size: 10)).monospacedDigit()
-                iconButton("info.circle", "查看状态符号与时间说明") { model.navigate(.legend) }
+                iconButton("info.circle", "帮助：菜单栏图标与状态符号") { model.navigate(.help) }
                 if model.filteredSessions.count > 5 {
                     Button { model.showAllSessions.toggle(); model.resize?(model.panelHeight) } label: {
                         Image(systemName: model.showAllSessions ? "chevron.up" : "chevron.down").font(.system(size: 9)).frame(width: 18, height: 28).contentShape(Rectangle())
@@ -100,7 +102,7 @@ struct WatcherPanel: View {
         }
     }
     private func quotaButton(_ provider: AgentProvider, remaining: Int?) -> some View {
-        Button { model.showQuota(provider) } label: {
+        Button { model.showDetail(provider) } label: {
             HStack(spacing: 5) {
                 AgentIcon(provider: provider, size: 18)
                 QuotaRing(remaining: remaining, stale: model.accountQuotaError(provider) != nil)
@@ -109,19 +111,32 @@ struct WatcherPanel: View {
             .help(provider.name + " · 7 日剩余 " + (remaining.map { "\($0)%" } ?? "暂不可用") + (model.accountQuotaError(provider) != nil ? " · 数据未刷新" : "") + "；点击查看详情")
             .accessibilityLabel(provider.name + "，7 日剩余 " + (remaining.map { "\($0)%" } ?? "未知") + "，查看详情")
     }
-    private var quotaDetails: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 15) {
-                heading(model.quotaProvider, "账户剩余额度")
-                if let quota = model.accountQuota(model.quotaProvider) {
+    /// One page per Agent: account quota (all devices) above local usage (this Mac).
+    private var details: some View {
+        let provider = model.detailProvider
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 8) {
+                    AgentIcon(provider: provider, size: 26)
+                    Text(provider.name).font(.system(size: 14, weight: .semibold))
+                    Spacer(minLength: 6)
+                    Picker("Agent", selection: Binding(get: { model.detailProvider }, set: { model.showDetail($0) })) { Text("Codex").tag(AgentProvider.codex); Text("Claude").tag(AgentProvider.claude) }
+                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 120)
+                }
+                sectionTitle("账户额度", "账户 · 含其他设备")
+                if let quota = model.accountQuota(provider) {
                     ForEach(quota.windows) { window in
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack { Text(window.name == "Codex" ? window.shortLabel : "\(window.name) · \(window.shortLabel)"); Spacer(); Text("\(window.remainingPercent)%").font(.system(size: 21, weight: .medium)).monospacedDigit() }
-                            if let date = window.resetsAt { Text("重置 \(date.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 10)).foregroundStyle(secondary) }
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(window.name == "Codex" ? window.shortLabel : "\(window.name) · \(window.shortLabel)")
+                                if let date = window.resetsAt { Text("重置 \(date.formatted(date: .abbreviated, time: .shortened))").font(.system(size: 10)).foregroundStyle(secondary) }
+                            }
+                            Spacer()
+                            Text("\(window.remainingPercent)%").font(.system(size: 18, weight: .medium)).monospacedDigit()
                         }
                     }
                     if quota.unlimitedCredits { row("积分", "无限") } else if let balance = quota.creditBalance { row("积分余额", balance) }
-                    if model.quotaProvider == .claude {
+                    if provider == .claude {
                         if !quota.windows.contains(where: { $0.id == "seven_day" }) { row("7 日剩余", "未知") }
                         if let billing = quota.claudeBilling {
                             row("额外用量计费", billing.enabled.map { $0 ? "已启用" : "未启用" } ?? "未知")
@@ -132,71 +147,77 @@ struct WatcherPanel: View {
                             }
                             row("账户余额", billing.balance?.formatted ?? "未知")
                         } else { row("额外用量计费", "未知"); row("账户余额", "未知") }
-                        Text("支出预算与账户余额分开显示；缺失字段不作估算。").font(.system(size: 10)).foregroundStyle(secondary)
                     }
-                    row("采集", quota.capturedAt.formatted(date: .omitted, time: .shortened)); row("范围", "账户 · 含其他设备")
+                    row("采集", quota.capturedAt.formatted(date: .omitted, time: .shortened))
+                } else if model.accountQuotaError(provider) == nil {
+                    Text("暂无额度数据").font(.system(size: 11)).foregroundStyle(secondary)
                 }
-                if let error = model.accountQuotaError(model.quotaProvider) { Text(error.message(for: model.quotaProvider)).font(.system(size: 11)).foregroundStyle(amber) }
-                Button("查看 \(model.quotaProvider.name) 本机用量") { model.showUsage(model.quotaProvider) }.buttonStyle(.bordered).controlSize(.small)
-            }.padding(16)
-        }
-    }
-    private var usageDetails: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 13) {
-                heading(model.usageProvider, "本机用量")
-                Picker("Agent", selection: Binding(get: { model.usageProvider }, set: { model.showUsage($0) })) { Text("Codex").tag(AgentProvider.codex); Text("Claude").tag(AgentProvider.claude) }.pickerStyle(.segmented).labelsHidden()
-                Picker("日期范围", selection: Binding(get: { model.days }, set: { model.selectDays($0) })) { Text("今日").tag(1); Text("7 日").tag(7); Text("30 日").tag(30) }.pickerStyle(.segmented).labelsHidden()
-                if model.detailUsage.isPartial { Text("部分统计 · 已确认小计").font(.system(size: 10)).foregroundStyle(amber) }
-                Text(compactNumber(model.detailUsage.tokens.total)).font(.system(size: 30, weight: .medium)).monospacedDigit()
-                Text("tokens · 这台 Mac · 每小时更新").font(.system(size: 10)).foregroundStyle(secondary)
+                if let error = model.accountQuotaError(provider) { Text(error.message(for: provider)).font(.system(size: 11)).foregroundStyle(amber).fixedSize(horizontal: false, vertical: true) }
+                Divider().padding(.vertical, 2)
+                sectionTitle("本机用量", "这台 Mac · 每小时更新")
+                Picker("日期范围", selection: Binding(get: { model.days }, set: { model.selectDays($0) })) { Text("今日").tag(1); Text("7 日").tag(7); Text("30 日").tag(30) }.pickerStyle(.segmented).labelsHidden().controlSize(.small)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(compactNumber(model.detailUsage.tokens.total)).font(.system(size: 24, weight: .medium)).monospacedDigit()
+                    Text("tokens").font(.system(size: 10)).foregroundStyle(secondary)
+                    Spacer()
+                    if model.detailUsage.isPartial { Text("部分统计").font(.system(size: 10)).foregroundStyle(amber) }
+                }
                 row("输入合计", compactNumber(model.detailUsage.tokens.input)); row("缓存读取¹", compactNumber(model.detailUsage.tokens.cached))
                 row("缓存写入¹", compactNumber(model.detailUsage.tokens.cacheWrite)); row("输出合计", compactNumber(model.detailUsage.tokens.output))
-                if model.usageProvider == .codex { row("推理¹", compactNumber(model.detailUsage.tokens.reasoning)) }
+                if provider == .codex { row("推理¹", compactNumber(model.detailUsage.tokens.reasoning)) }
                 ForEach(model.detailUsage.byModel.prefix(8)) { row($0.name, compactNumber($0.tokens)) }
                 Text("¹ 已含在输入或输出中，不重复相加。").font(.system(size: 10)).foregroundStyle(secondary)
                 if model.detailUsage.isPartial { Text("跳过 \(model.detailUsage.skippedLines) 行 · 未完成请求 \(model.detailUsage.incompleteRequests) · 待确认继承 \(model.detailUsage.unresolvedForks) · 压缩文件 \(model.detailUsage.compressedFiles)").font(.system(size: 10)).foregroundStyle(secondary) }
-            }.padding(16)
+            }.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 14)
         }
     }
-    private var statusLegend: some View {
+    private func sectionTitle(_ title: String, _ note: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+            Text(note).font(.system(size: 10)).foregroundStyle(secondary)
+        }.padding(.top, 2)
+    }
+    /// Help: menu bar icon states, session symbols, and two one-line notes.
+    private var help: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("符号表示最近确认的状态").font(.system(size: 15, weight: .semibold))
-                VStack(spacing: 12) {
-                    legendRow(.running, "正在工作", "包括模型执行与工具调用，工作时播放动效")
-                    legendRow(.idle, "本轮完成", "已收到完成记录，会话可继续")
-                    legendRow(.unknown, "状态待确认", "证据不足，不能判断是否还在工作")
+            VStack(alignment: .leading, spacing: 10) {
+                sectionTitle("菜单栏图标", "打开面板后清除未读")
+                VStack(spacing: 7) {
+                    iconRow(ActivityUpdate(mode: .idle), "空闲", "静止波形，没有确认在工作的会话")
+                    iconRow(ActivityUpdate(mode: .working, active: 2), "工作中", "数字为工作中的会话数，波形持续跳动")
+                    iconRow(ActivityUpdate(mode: .attention, active: 2, attention: 1), "工作中，另有待处理", "橙点：有会话等待回复或出错")
+                    iconRow(ActivityUpdate(mode: .attention, attention: 1), "需要处理", "等待输入、批准或发生错误")
+                    iconRow(ActivityUpdate(mode: .completed, unread: 1), "完成未读", "有会话完成本轮工作")
                 }
-                Divider()
-                Text("3 分钟没有新记录 ≠ 已停工").font(.system(size: 12, weight: .medium))
-                Text("上次还在工作，但超过 3 分钟没有新的状态记录，就显示待确认。可能仍在等待或执行，也可能已经退出；仅靠日志无法区分。已明确完成的会话仍显示勾。").font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
-                Divider()
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: "clock").frame(width: 16)
-                    Text("右侧时间是距最近状态记录的时间，不是工作时长。").fixedSize(horizontal: false, vertical: true)
-                }.font(.system(size: 11)).foregroundStyle(secondary)
-                DisclosureGroup("其他状态") {
-                    VStack(spacing: 12) {
-                        legendRow(.waitingApproval, "等待批准", "仅在明确识别到批准等待时显示")
-                        legendRow(.waitingInput, "等待输入", "需要你的回答")
-                        legendRow(.interrupted, "已中断", "本轮被停止")
-                        legendRow(.error, "发生错误", "最近记录了错误，进入 Agent 查看")
-                        legendRow(.ended, "会话已结束", "已收到会话结束记录")
-                    }.padding(.top, 10)
-                }.font(.system(size: 11))
-            }.padding(16)
+                Divider().padding(.vertical, 2)
+                sectionTitle("会话状态", "")
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 6) {
+                    ForEach([SessionStatus.running, .idle, .waitingInput, .waitingApproval, .error, .interrupted, .ended, .unknown], id: \.self) { status in
+                        HStack(spacing: 6) {
+                            SessionStatusIcon(status: status, animate: false).accessibilityHidden(true)
+                            Text(status == .running ? "工作中" : status.label).font(.system(size: 11))
+                        }
+                    }
+                }
+                Divider().padding(.vertical, 2)
+                noteRow("clock", "右侧时间是距最近记录，不是工作时长")
+                noteRow("circle.dashed", "3 分钟无新记录显示待确认，不代表已完成")
+            }.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 14)
         }
     }
-    private func legendRow(_ status: SessionStatus, _ title: String, _ description: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            SessionStatusIcon(status: status, animate: false).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
+    private func iconRow(_ state: ActivityUpdate, _ title: String, _ description: String) -> some View {
+        HStack(spacing: 10) {
+            MenuIconSample(state: state).frame(width: 46, alignment: .leading).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 12, weight: .medium))
-                Text(description).font(.system(size: 11)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
+                Text(description).font(.system(size: 10)).foregroundStyle(secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-        }
+        }.accessibilityElement(children: .combine)
+    }
+    private func noteRow(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 8) { Image(systemName: symbol).frame(width: 16); Text(text).fixedSize(horizontal: false, vertical: true) }
+            .font(.system(size: 11)).foregroundStyle(secondary)
     }
     @ViewBuilder private func sessionDetails(_ key: String) -> some View {
         if let session = model.allSessions.first(where: { $0.key == key }) {
@@ -232,10 +253,9 @@ struct WatcherPanel: View {
     private var pageTitle: String {
         switch model.page {
         case .home: "a-watcher"
-        case .quota: "账户额度"
-        case .usage: "本机用量"
+        case .detail: "详情"
         case .history: ""
-        case .legend: "状态说明"
+        case .help: "帮助"
         case .session: "会话"
         }
     }
