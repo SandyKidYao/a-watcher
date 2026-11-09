@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Combine
 import WatcherCore
+import Sparkle
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem?
@@ -15,6 +16,7 @@ import WatcherCore
     private var motionSubscription: AnyCancellable?
     private var activityLog: URL?
     private var lastLoggedActivity = ""
+    private var updaterController: SPUStandardUpdaterController?
     func applicationDidFinishLaunching(_ notification: Notification) {
         let launchArgs = CommandLine.arguments
         if let i = launchArgs.firstIndex(of: "--export-motion"), launchArgs.count > i + 1 {
@@ -55,6 +57,13 @@ import WatcherCore
             return
         }
         model.start()
+        // Preview/smoke runs must not make update requests or show updater windows.
+        if !args.contains("--export-preview"), !args.contains("--smoke-seconds"),
+           Bundle.main.bundleURL.pathExtension == "app",
+           let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+           Data(base64Encoded: key)?.count == 32 {
+            updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        }
         if let i = args.firstIndex(of: "--activity-log"), args.count > i + 1 { activityLog = URL(fileURLWithPath: args[i + 1]) }
         if args.contains("--show") { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.toggle() } }
         if let i = args.firstIndex(of: "--export-preview"), args.count > i + 1 {
@@ -68,6 +77,18 @@ import WatcherCore
     @objc private func toggle() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
+            let updates = NSMenuItem(title: updaterController == nil ? "检查更新…（尚未配置）" : "检查更新…",
+                                     action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+            updates.target = updaterController
+            if updaterController == nil { updates.action = nil; updates.isEnabled = false }
+            menu.addItem(updates)
+            if let updaterController {
+                let automatic = NSMenuItem(title: "自动检查更新", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
+                automatic.target = self
+                automatic.state = updaterController.updater.automaticallyChecksForUpdates ? .on : .off
+                menu.addItem(automatic)
+            }
+            menu.addItem(.separator())
             let quit = NSMenuItem(title: "退出 a-watcher", action: #selector(quit), keyEquivalent: "q"); quit.target = self
             menu.addItem(quit)
             if let button = item?.button { menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button) }
@@ -89,6 +110,10 @@ import WatcherCore
         panel.show(below: button, size: NSSize(width: model.panelWidth, height: model.panelHeight))
     }
     @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func toggleAutomaticUpdates() {
+        guard let updater = updaterController?.updater else { return }
+        updater.automaticallyChecksForUpdates.toggle()
+    }
     private func updateStatus() {
         guard let model else { return }
         let update = activity.ingest(model.allSessions, bootstrapping: model.isIndexing)

@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'release' || (!github.event.release.prerelease && !github.event.release.draft)
     runs-on: macos-26
     env:
       TAG: ${{ github.event.release.tag_name || github.ref_name }}
@@ -27,11 +28,20 @@ jobs:
       - name: Toolchain
         run: swift --version
 
+      - name: Validate release configuration
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Select a stable vX.Y.Z tag.' >&2; exit 1; }
+          test -n "$SPARKLE_PRIVATE_KEY" || { echo 'Configure the SPARKLE_PRIVATE_KEY repository secret first.' >&2; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist >/dev/null
+
       - name: Stamp version
         if: startsWith(env.TAG, 'v')
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${TAG#v}" Resources/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" Resources/Info.plist
+          # Deterministic, ordered across reruns and workflow changes.
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${TAG#v}" Resources/Info.plist
 
       - name: Checks
         run: bash Scripts/check.sh
@@ -39,16 +49,16 @@ jobs:
       - name: Build app
         run: bash Scripts/build.sh
 
-      - name: Package
-        run: |
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent build/a-watcher.app "dist/a-watcher-${TAG}-macos-arm64.zip"
-          shasum -a 256 dist/*.zip | tee dist/SHA256SUMS.txt
+      - name: Sign and verify update package
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: bash Scripts/package-update.sh "$TAG"
 
       - uses: actions/upload-artifact@v4
         with:
           name: a-watcher-${{ env.TAG }}
           path: dist/*
+          if-no-files-found: error
 
       - name: Attach to release
         if: startsWith(env.TAG, 'v')
@@ -57,4 +67,4 @@ jobs:
         run: |
           # A pushed tag creates its release; a published release is reused.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "a-watcher $TAG" --generate-notes
-          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" "dist/a-watcher-${TAG}-macos-arm64.zip" dist/appcast.xml dist/SHA256SUMS.txt --clobber

@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6.0</string>
+	<string>0.7.0</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>0.7.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -26,5 +26,27 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/SandyKidYao/a-watcher/releases/latest/download/appcast.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUShowReleaseNotes</key>
+	<false/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
+	<key>SUPublicEDKey</key>
+	<string>ZRO/uc4LBVchuQboqSHhB+1MyuSWQevU9dVlHZhIddk=</string>
 </dict>
 </plist>
