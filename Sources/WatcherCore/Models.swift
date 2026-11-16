@@ -3,8 +3,8 @@ import CoreFoundation
 import CryptoKit
 
 public enum AgentProvider: String, Codable, Sendable, CaseIterable {
-    case codex, claude
-    public var name: String { self == .codex ? "Codex" : "Claude Code" }
+    case codex, claude, pi
+    public var name: String { source.name }
 }
 
 public enum SessionStatus: String, Codable, Sendable {
@@ -76,6 +76,7 @@ public struct SessionRecord: Codable, Sendable, Equatable, Identifiable {
     public var status: SessionStatus
     public var observedAt: Date
     public var source: String
+    public var confirmedCompletions: [Date]?
     public var tool: String?
     public init(id: String = "", project: String = "Codex", directory: String = "", model: String = "unknown", parentID: String? = nil, status: SessionStatus = .unknown, observedAt: Date = .distantPast, source: String = "日志", tool: String? = nil) {
         self.id = id; self.project = project; self.directory = directory; self.model = model; self.parentID = parentID
@@ -97,11 +98,12 @@ public struct UsageSummary: Sendable {
     public var skippedLines: Int = 0
     public var unresolvedForks: Int = 0
     public var compressedFiles: Int = 0
+    public var unreadableSources: Int = 0
     public var incompleteRequests: Int = 0
     public var indexing: Bool = false
     public var filesDone: Int = 0
     public var filesTotal: Int = 0
-    public var isPartial: Bool { indexing || skippedLines > 0 || unresolvedForks > 0 || compressedFiles > 0 || incompleteRequests > 0 }
+    public var isPartial: Bool { unreadableSources > 0 || indexing || skippedLines > 0 || unresolvedForks > 0 || compressedFiles > 0 || incompleteRequests > 0 }
     public init() {}
 }
 public struct IndexSnapshot: Sendable {

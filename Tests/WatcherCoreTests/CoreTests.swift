@@ -723,10 +723,85 @@ func claudeModernSpendAndWindowFormats() throws {
     try expect(invalid.claudeBilling?.spent == nil)
 }
 
+func piLedgerResolvesNonPrefixForksAndUsageKinds() async throws {
+    let folder = try temporary().resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let dir = folder.appendingPathComponent("sessions/project")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let now = Date(), stamp = ISO8601DateFormatter().string(from: now)
+    let parent = dir.appendingPathComponent("parent.jsonl")
+    let units = ["input": 2, "output": 3, "cacheRead": 4, "cacheWrite": 1, "totalTokens": 10]
+    func header(_ id: String, _ parent: URL? = nil) -> [String: Any] {
+        var value: [String: Any] = ["type": "session", "version": 3, "id": id, "cwd": folder.path, "timestamp": stamp]
+        value["parentSession"] = parent?.path
+        return value
+    }
+    func event(_ id: String, _ type: String) -> [String: Any] {
+        var value: [String: Any] = ["id": id, "timestamp": stamp]
+        if ["assistant", "toolResult"].contains(type) {
+            value["type"] = "message"; value["message"] = ["role": type, "usage": units]
+        } else { value["type"] = type; value["usage"] = units }
+        return value
+    }
+    func write(_ entries: [[String: Any]], to file: URL) throws {
+        var data = Data()
+        for entry in entries { data.append(try json(entry)); data.append(10) }
+        try data.write(to: file)
+    }
+    let database = folder.appendingPathComponent("ledger.sqlite")
+    let index = try AgentIndex(root: folder, database: database, provider: .pi)
+    let inherited = event("b", "usage")
+    try write([header("child", parent), inherited, event("x", "compaction"), event("y", "branch_summary"), event("z", "toolResult")], to: dir.appendingPathComponent("fork.jsonl"))
+    let missing = try await index.scanStep(now: now)
+    try expect(missing.usage.unresolvedForks == 1 && missing.usage.tokens.total == 0 && missing.usage.isPartial)
+    try write([header("parent"), event("a", "assistant"), inherited], to: parent)
+    try write([header("unrelated"), inherited], to: dir.appendingPathComponent("unrelated.jsonl"))
+    await index.invalidate()
+    let full = try await index.scanStep(now: now)
+    try expect(full.usage.tokens.total == 60 && full.usage.excludedReplayRecords == 1)
+    try expect(full.sessions.count == 3 && full.sessions.allSatisfy { $0.status == .unknown && $0.provider == .pi })
+    let restarted = try AgentIndex(root: folder, database: database, provider: .pi)
+    let history = try await restarted.history(year: Calendar.current.component(.year, from: now), now: now)
+    try expect(history.days.map(\.tokens.total).reduce(0,+) == 60)
+    let invalid = ["type":"usage", "id":"m", "timestamp":stamp, "usage":["totalTokens": 1]] as [String: Any]
+    try write([header("partial"), invalid], to: dir.appendingPathComponent("partial.jsonl"))
+    let partial = try await restarted.scanStep(now: now)
+    try expect(partial.usage.isPartial && partial.usage.tokens.total == 60)
+}
+
+func piStatusBridgeAndCoalescedCompletions() async throws {
+    let dir = try temporary().resolvingSymlinksInPath()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let reader = PiStatusReader(directory: dir, agentRoot: dir)
+    let file = dir.appendingPathComponent("fixture.jsonl"), now = Date()
+    let canonical = try require(realpath(dir.path, nil))
+    defer { free(canonical) }
+    var value: [String: Any] = ["version": 1, "id": "pi-session", "pid": getpid(), "root": stableHash(String(cString: canonical)), "cwd": dir.path,
+        "time": now.timeIntervalSince1970 * 1000, "status": "waitingApproval"]
+    try json(value).write(to: file)
+    let waiting = await reader.update(paths: [dir.path], now: now)
+    try expect(waiting["pi:pi-session"]?.status == .waitingApproval)
+    let stale = await reader.update(paths: [file.path], now: now.addingTimeInterval(181))
+    try expect(stale["pi:pi-session"]?.status == .unknown)
+    var tracker = ActivityTracker()
+    _ = tracker.ingest([], bootstrapping: false, now: now.addingTimeInterval(-10))
+    value["status"] = "idle"; value["completions"] = [-3, -1].map { now.addingTimeInterval(Double($0)).timeIntervalSince1970 * 1000 }
+    try json(value).write(to: file)
+    let done = Array(await reader.update(paths: [file.path], now: now).values)
+    try expect(tracker.ingest(done, bootstrapping: false, now: now).unread == 2)
+    try expect(tracker.ingest(done, bootstrapping: false, now: now).completed == 0)
+    value["root"] = "another-installation"
+    try json(value).write(to: file)
+    let other = await reader.update(paths: [file.path], now: now)
+    try expect(other.isEmpty)
+}
+
 @main struct Checks {
     static func main() async {
         var failures = 0
         do { try await skippedLiveRecordsRemainUnknown(); print("PASS skippedLiveRecordsRemainUnknown") } catch { failures += 1; print("FAIL skippedLiveRecordsRemainUnknown: \(error)") }
+        do { try await piLedgerResolvesNonPrefixForksAndUsageKinds(); print("PASS piLedgerResolvesNonPrefixForksAndUsageKinds") } catch { failures += 1; print("FAIL piLedgerResolvesNonPrefixForksAndUsageKinds: \(error)") }
+        do { try await piStatusBridgeAndCoalescedCompletions(); print("PASS piStatusBridgeAndCoalescedCompletions") } catch { failures += 1; print("FAIL piStatusBridgeAndCoalescedCompletions: \(error)") }
         let nativeEvents = CommandLine.arguments.contains("--native-file-events")
         if nativeEvents {
             do { try await nativeOpenLogAppendsRemainObservable(); print("PASS nativeOpenLogAppendsRemainObservable") } catch { failures += 1; print("FAIL nativeOpenLogAppendsRemainObservable: \(error)") }
@@ -775,7 +850,7 @@ func claudeModernSpendAndWindowFormats() throws {
         do { try await projectAnchorSurvivesIndexRestart(); print("PASS projectAnchorSurvivesIndexRestart") } catch { failures += 1; print("FAIL projectAnchorSurvivesIndexRestart: \(error)") }
         do { try staleOrUnknownEvidenceShowsIdleIcon(); print("PASS staleOrUnknownEvidenceShowsIdleIcon") } catch { failures += 1; print("FAIL staleOrUnknownEvidenceShowsIdleIcon: \(error)") }
         do { try workingCountExcludesWaitingAndStaleSessions(); print("PASS workingCountExcludesWaitingAndStaleSessions") } catch { failures += 1; print("FAIL workingCountExcludesWaitingAndStaleSessions: \(error)") }
-        print("\(44 + (nativeEvents ? 2 : 0)) checks, \(failures) failures")
+        print("\(46 + (nativeEvents ? 2 : 0)) checks, \(failures) failures")
         if failures > 0 { exit(1) }
     }
 }

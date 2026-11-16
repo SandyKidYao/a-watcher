@@ -13,6 +13,7 @@ public struct LiveStatusSeed: Sendable {
 /// metadata in memory: no transcript text, token records, or credentials.
 public actor LiveStatusReader {
     private let root: URL
+    private let bases: [URL]
     private let provider: AgentProvider
     private var sessions: [String: SessionRecord] = [:]
     private var cursors: [String: ReadCursor] = [:]
@@ -23,7 +24,11 @@ public actor LiveStatusReader {
         let paths = Array(watchPaths); watchPaths.removeAll(); return paths
     }
     public var hasPendingUpdates: Bool { !queued.isEmpty }
-    public init(root: URL, provider: AgentProvider) { self.root = root.resolvingSymlinksInPath(); self.provider = provider }
+    public init(root: URL, provider: AgentProvider, sessionDirectory: URL? = nil) {
+        self.root = root.resolvingSymlinksInPath()
+        self.provider = provider
+        bases = provider.source.transcriptDirectories(root: self.root, override: sessionDirectory)
+    }
     public func seed(_ values: [String: SessionRecord]) {
         for (path, value) in values {
             let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
@@ -65,23 +70,21 @@ public actor LiveStatusReader {
                 var state = ParserState()
                 state.session = sessions[path] ?? SessionRecord(id: url.deletingPathExtension().lastPathComponent, project: provider.name)
                 state.session.provider = provider
-                var codex = CodexParser(state: state), claude = ClaudeParser(state: state, fileID: url.deletingPathExtension().lastPathComponent)
-                func consume(_ line: Data, _ offset: UInt64) {
-                    if provider == .codex { _ = codex.consume(line, offset: offset) } else { _ = claude.consume(line, offset: offset) }
-                }
+                var parser = provider.source.parser(state, url.deletingPathExtension().lastPathComponent)
+                func consume(_ line: Data, _ offset: UInt64) { _ = parser.consume(line, offset: offset) }
                 var cursor = cursors[path] ?? ReadCursor()
                 if cursors[path] == nil, size > 2 * 1024 * 1024 {
                     guard remaining >= 4 * 1024 * 1024 else { queued.insert(path); return }
                     // Bootstrap only: recover metadata from a bounded header,
                     // then recent evidence. An unobserved gap stays unknown.
                     if let header = try? LineReader.read(url, cursor: ReadCursor(), byteBudget: 2 * 1024 * 1024, consume: consume) { remaining -= header.bytesRead }
-                    codex.state.session.status = .unknown; claude.state.session.status = .unknown
+                    parser.state.session.status = .unknown
                     cursor = ReadCursor(offset: size - 2 * 1024 * 1024, dropping: true)
                 }
                 let budget = min(remaining, 2 * 1024 * 1024)
                 guard let result = try? LineReader.read(url, cursor: cursor, byteBudget: budget, lineLimit: 1024 * 1024, consume: consume) else { return }
                 remaining -= result.bytesRead
-                sessions[path] = provider == .codex ? codex.state.session : claude.state.session
+                sessions[path] = parser.state.session
                 // Missing oversized records must not preserve a false working
                 // or completed state. Later evidence/accounting may refine it.
                 if result.skipped > 0 { sessions[path]?.status = .unknown }
@@ -93,7 +96,6 @@ public actor LiveStatusReader {
     }
     private func enqueue(_ path: String, now: Date) {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        let bases = (provider == .codex ? ["sessions", "archived_sessions"] : ["projects"]).map { root.appendingPathComponent($0) }
         guard url.path == root.path || bases.contains(where: { url.path == $0.path || url.path.hasPrefix($0.path + "/") }) else { return }
         if url.pathExtension == "jsonl" { queued.insert(url.path); watchPaths.insert(url.path); return }
         // Directory/drop/root events trigger metadata discovery, never a usage

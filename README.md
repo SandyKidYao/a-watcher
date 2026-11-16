@@ -6,7 +6,7 @@
 
 <p align="center">
   住在菜单栏里的 AI 编程助手看板。<br>
-  一眼看清 Codex 与 Claude Code 谁在干活、谁在等你、今天用了多少、额度还剩多少。
+  一眼看清 Codex、Claude Code 和 Pi 谁在干活、谁在等你、今天用了多少、额度还剩多少。
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ a-watcher 把这些答案收进菜单栏的一个小图标里，不用来回切�
 </p>
 
 **一个面板看全部会话**
-Codex 与 Claude Code 的近期会话按项目列出，状态一目了然：正在工作、等待批准、等待输入、本轮完成。可以按 Agent 筛选，点开查看详情。
+Codex、Claude Code 和 Pi 的近期会话按项目列出，状态一目了然：正在工作、等待批准、等待输入、本轮完成。可以按 Agent 筛选，点开查看详情。
 
 **账户额度一眼可见**
 面板底部用圆环显示每个 Agent 的 7 日剩余额度，悬停看精确数值；点开详情页，同一页查看 5 小时与 7 日窗口、重置时间和这台 Mac 的本机用量。菜单栏图标各形态的含义见面板里的帮助页。
@@ -49,7 +49,7 @@ Codex 与 Claude Code 的近期会话按项目列出，状态一目了然：正�
 </p>
 
 **今日用量与年度热力图**
-底部数字是这台 Mac 今天两个 Agent 的 token 合计。点开即是全年热力图，可按天查看各 Agent 的用量明细。
+底部数字是这台 Mac 今天各 Agent 的 token 合计。点开即是全年热力图，可按天查看各 Agent 的用量明细。
 
 <p align="center">
   <img src="docs/images/history.png" width="680" alt="年度用量热力图">
@@ -69,7 +69,26 @@ Codex 与 Claude Code 的近期会话按项目列出，状态一目了然：正�
 
 打开后 a-watcher 只出现在菜单栏，没有 Dock 图标。左键打开面板；右键或面板右下角的电源按钮可退出。
 
-使用前请确保 Codex 或 Claude Code 已经在这台 Mac 上登录过。
+Codex 和 Claude Code 的账户额度来自这台 Mac 上已有的登录。Pi 的额度取决于模型服务商，显示为虚线环。
+
+### 使用 Pi
+
+启动 a-watcher 后，默认会读取 `~/.pi/agent/sessions/` 的会话和用量。Pi 自定义目录可通过 `--pi-home` 或 `--pi-session-dir` 指定，也支持传给 a-watcher 进程的 `PI_CODING_AGENT_DIR` 和 `PI_CODING_AGENT_SESSION_DIR`。只有会话日志时，面板将 Pi 的实时状态显示为「状态待确认」。
+
+要在菜单栏看到 Pi 工作、等待和完成，可在 Pi 1.5.2 或更新的 1.x 版本中加载应用随附的扩展。单次使用：
+
+```sh
+pi -e /Applications/a-watcher.app/Contents/Resources/Pi/a-watcher.ts
+```
+
+要为以后启动的会话启用，在 Pi 的扩展目录创建链接，然后在 Pi 中执行 `/reload`：
+
+```sh
+mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
+ln -s /Applications/a-watcher.app/Contents/Resources/Pi/a-watcher.ts "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/a-watcher.ts"
+```
+
+应用放在其他位置时请替换上面的应用路径。扩展只为可持久化的 Pi 会话向本机发送状态。
 
 ## 隐私
 

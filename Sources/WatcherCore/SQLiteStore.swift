@@ -115,6 +115,7 @@ final class SQLiteStore {
         return result
     }
     func resetFile(_ path: String) throws {
+        try run("DELETE FROM forks WHERE session IN (SELECT session FROM usage WHERE path=?)", [.text(path)])
         try run("DELETE FROM usage WHERE path=?", [.text(path)])
         try run("UPDATE forks SET resolved=0")
     }
@@ -124,23 +125,21 @@ final class SQLiteStore {
             try run("INSERT INTO forks(session,parent) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET parent=excluded.parent", [.text(file.parser.session.id), .text(parent)])
         }
     }
-    func insert(_ record: UsageRecord, path: String, fork: Bool) throws {
-        if record.key.hasPrefix("claude:") { try insertClaude(record, path: path); return }
+    func forkResolved(_ session: String) throws -> Bool {
+        let query = try statement("SELECT resolved FROM forks WHERE session=?", [.text(session)])
+        defer { sqlite3_finalize(query) }
+        return sqlite3_step(query) == SQLITE_ROW && sqlite3_column_int(query, 0) == 1
+    }
+    func insertUsage(_ record: UsageRecord, path: String, excluded: Bool) throws {
         if record.removal { try run("DELETE FROM usage WHERE event_key=?", [.text(record.key)]); return }
-        var exclude = fork
-        if fork {
-            let resolved = try statement("SELECT resolved FROM forks WHERE session=?", [.text(record.sessionID)])
-            defer { sqlite3_finalize(resolved) }
-            if sqlite3_step(resolved) == SQLITE_ROW, sqlite3_column_int(resolved, 0) == 1 { exclude = false }
-        }
         try run("""
             INSERT OR IGNORE INTO usage(path,event_key,session,ordinal,timestamp,model,tier,input,cached,cache_write,output,reasoning,compaction,replay)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [.text(path), .text(record.key), .text(record.sessionID), .integer(record.ordinal), .real(record.timestamp.timeIntervalSince1970),
                    .text(record.model), .text(record.tier), .integer(record.tokens.input), .integer(record.tokens.cached), .integer(record.tokens.cacheWrite),
-                   .integer(record.tokens.output), .integer(record.tokens.reasoning), .integer(record.compaction ? 1 : 0), .integer(exclude ? 1 : 0)])
+                   .integer(record.tokens.output), .integer(record.tokens.reasoning), .integer(record.compaction ? 1 : 0), .integer(excluded ? 1 : 0)])
     }
-    private func insertClaude(_ record: UsageRecord, path: String) throws {
+    func mergeStreamingResponse(_ record: UsageRecord, path: String) throws {
         // Upgrade every known copy together. An older partial chunk cannot
         // overwrite a final response, and duplicate copies keep their dates.
         let lookup = try statement("SELECT input,cached,cache_write,output,reasoning,finalized FROM usage WHERE event_key=? ORDER BY finalized DESC,output DESC LIMIT 1", [.text(record.key)])
@@ -159,30 +158,53 @@ final class SQLiteStore {
         try run("INSERT OR IGNORE INTO usage(path,event_key,session,ordinal,timestamp,model,tier,input,cached,cache_write,output,reasoning,compaction,replay,finalized) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)",
             [.text(path), .text(record.key), .text(record.sessionID), .integer(record.ordinal), .real(record.timestamp.timeIntervalSince1970), .text(record.model), .text(record.tier), .integer(tokens.input), .integer(tokens.cached), .integer(tokens.cacheWrite), .integer(tokens.output), .integer(tokens.reasoning), .integer(final ? 1 : 0)])
     }
-    func reconcileForks(files: [String: IndexedFile]) throws {
+    func reconcileForks(files: [String: IndexedFile], match: (SQLiteStore, String, String, [String: IndexedFile]) throws -> Bool) throws {
         let forks = try statement("SELECT session,parent FROM forks WHERE resolved=0"); defer { sqlite3_finalize(forks) }
         var pairs: [(String, String)] = []
         while sqlite3_step(forks) == SQLITE_ROW { pairs.append((text(forks, 0), text(forks, 1))) }
         for (child, parent) in pairs {
-            guard files.values.contains(where: { $0.parser.session.id == child && $0.complete }),
-                  files.values.contains(where: { $0.parser.session.id == parent && $0.complete }) else { continue }
-            // Compare the child's leading usage against the parent's actual prefix,
-            // independently of rewritten timestamps. No parent => remain excluded
-            // and report incomplete coverage instead of inflating the total.
-            let sql = "SELECT event_key,input,cached,cache_write,output,reasoning FROM usage WHERE session=? AND compaction=0 GROUP BY event_key ORDER BY MIN(ordinal)"
-            let c = try statement(sql, [.text(child)]), p = try statement(sql, [.text(parent)])
-            defer { sqlite3_finalize(c); sqlite3_finalize(p) }
-            var replayKeys: [String] = []
-            while sqlite3_step(c) == SQLITE_ROW {
-                guard sqlite3_step(p) == SQLITE_ROW else { break }
-                if (1...5).allSatisfy({ sqlite3_column_int64(c, Int32($0)) == sqlite3_column_int64(p, Int32($0)) }) {
-                    replayKeys.append(text(c, 0))
-                } else { break }
-            }
-            try run("UPDATE usage SET replay=0 WHERE session=?", [.text(child)])
-            for key in replayKeys { try run("UPDATE usage SET replay=1 WHERE session=? AND event_key=?", [.text(child), .text(key)]) }
-            try run("UPDATE forks SET resolved=1 WHERE session=?", [.text(child)])
+            try begin()
+            do {
+                if try match(self, child, parent, files) {
+                    try run("UPDATE forks SET resolved=1 WHERE session=?", [.text(child)])
+                }
+                try commit()
+            } catch { rollback(); throw error }
         }
+    }
+    func reconcileEntryIDs(child: String, parent: String, files: [String: IndexedFile]) throws -> Bool {
+        // A Pi fork copies arbitrary tree entries retaining their IDs. Restrict
+        // matching to its actual parent file; unrelated sessions can reuse IDs.
+        guard let ancestor = files[parent] ?? files[physicalPath(parent)], ancestor.complete,
+              ancestor.parser.malformed == 0, ancestor.skipped == 0,
+              files.values.contains(where: { $0.parser.session.id == child && $0.complete }) else { return false }
+        try run("""
+            UPDATE usage SET replay=EXISTS(
+                SELECT 1 FROM usage AS inherited WHERE inherited.path=?
+                AND inherited.event_key=substr(usage.event_key,1,65) || ?
+            ) WHERE session=?
+            """, [.text(ancestor.path), .text(stableHash(ancestor.parser.session.id)), .text(child)])
+        return true
+    }
+    func reconcilePrefix(child: String, parent: String, files: [String: IndexedFile]) throws -> Bool {
+        guard files.values.contains(where: { $0.parser.session.id == child && $0.complete }),
+              files.values.contains(where: { $0.parser.session.id == parent && $0.complete }) else { return false }
+        // Compare the child's leading usage against the parent's actual prefix,
+        // independently of rewritten timestamps. No parent => remain excluded
+        // and report incomplete coverage instead of inflating the total.
+        let sql = "SELECT event_key,input,cached,cache_write,output,reasoning FROM usage WHERE session=? AND compaction=0 GROUP BY event_key ORDER BY MIN(ordinal)"
+        let c = try statement(sql, [.text(child)]), p = try statement(sql, [.text(parent)])
+        defer { sqlite3_finalize(c); sqlite3_finalize(p) }
+        var replayKeys: [String] = []
+        while sqlite3_step(c) == SQLITE_ROW {
+            guard sqlite3_step(p) == SQLITE_ROW else { break }
+            if (1...5).allSatisfy({ sqlite3_column_int64(c, Int32($0)) == sqlite3_column_int64(p, Int32($0)) }) {
+                replayKeys.append(text(c, 0))
+            } else { break }
+        }
+        try run("UPDATE usage SET replay=0 WHERE session=?", [.text(child)])
+        for key in replayKeys { try run("UPDATE usage SET replay=1 WHERE session=? AND event_key=?", [.text(child), .text(key)]) }
+        return true
     }
     func summary(since: Date, until: Date = .distantFuture) throws -> UsageSummary {
         var summary = UsageSummary()
