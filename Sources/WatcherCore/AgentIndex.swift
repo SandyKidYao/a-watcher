@@ -1,20 +1,24 @@
 import Foundation
 
-public actor CodexIndex {
+public typealias CodexIndex = AgentIndex
+
+public actor AgentIndex {
     public let root: URL
     public let provider: AgentProvider
+    private let directories: [URL]
     private let store: SQLiteStore
     private var files: [String: IndexedFile]
     private var knownURLs: [URL] = []
+    private var unreadablePaths: Set<String> = []
     private var compressedCount = 0
     private var invalidated = true
-    public init(root: URL, database: URL, provider: AgentProvider = .codex) throws {
+    public init(root: URL, database: URL, provider: AgentProvider = .codex, sessionDirectory: URL? = nil) throws {
         self.provider = provider
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        directories = provider.source.transcriptDirectories(root: self.root, override: sessionDirectory)
         let db = try SQLiteStore(url: database)
         self.store = db; self.files = try db.loadFiles()
-        let canonicalRoot = self.root
-        let sourceRoots = (provider == .codex ? ["sessions", "archived_sessions"] : ["projects"]).map { canonicalRoot.appendingPathComponent($0).path + "/" }
+        let sourceRoots = directories.map { $0.path + "/" }
         var repaired: [IndexedFile] = []
         for (path, var file) in files where file.parser.session.projectDirectory == nil {
             let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
@@ -36,7 +40,7 @@ public actor CodexIndex {
         guard (1900...9998).contains(year), let start = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
               let end = calendar.date(byAdding: .year, value: 1, to: start) else { return UsageHistory() }
         var result = try store.history(from: start, until: min(end, now.addingTimeInterval(1)), calendar: calendar)
-        result.isPartial = result.isPartial || knownURLs.isEmpty || compressedCount > 0 || files.values.contains {
+        result.isPartial = result.isPartial || !unreadablePaths.isEmpty || knownURLs.isEmpty || compressedCount > 0 || files.values.contains {
             !$0.complete || $0.skipped > 0 || $0.parser.malformed > 0 || $0.cursor.dropping
         }
         // Unresolved inherited history is excluded from the ledger; propagate
@@ -62,41 +66,44 @@ public actor CodexIndex {
         for url in knownURLs {
             guard budget > 0 else { break }
             try autoreleasepool {
-                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path), FileManager.default.isReadableFile(atPath: url.path) else {
+                    unreadablePaths.insert(url.path)
+                    return
+                }
                 let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
                 let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
                 let identity = "\(attributes[.systemNumber] ?? ""):\(attributes[.systemFileNumber] ?? "")"
                 let old = files[url.path]
                 let reset = old == nil || old?.identity != identity || size < (old?.cursor.offset ?? 0) || (old?.complete == true && old?.size == size && old?.modified != modified)
                 if !reset, let old, old.complete, old.size == size, old.modified == modified { return }
-                var parser = CodexParser(state: reset ? ParserState() : old!.parser)
-                var claude = ClaudeParser(state: reset ? ParserState() : old!.parser, fileID: url.deletingPathExtension().lastPathComponent)
+                var parser = provider.source.parser(reset ? ParserState() : old!.parser, url.deletingPathExtension().lastPathComponent)
                 let cursor = reset ? ReadCursor() : old!.cursor
                 try store.begin()
                 do {
                     if reset { try store.resetFile(url.path) }
                     let result = try LineReader.read(url, cursor: cursor, byteBudget: budget) { line, offset in
-                        let records = provider == .codex ? parser.consume(line, offset: offset) : claude.consume(line, offset: offset)
-                        for record in records { try store.insert(record, path: url.path, fork: provider == .codex && parser.state.session.parentID != nil) }
+                        let records = parser.consume(line, offset: offset)
+                        for record in records { try provider.source.ledger.insert(store, record, url.path, parser.state.session.parentID != nil) }
                     }
                     budget -= result.bytesRead
                     let entry = IndexedFile(path: url.path, identity: identity, size: size, modified: modified, cursor: result.cursor,
-                                            parser: provider == .codex ? parser.state : claude.state, skipped: (reset ? 0 : old!.skipped) + result.skipped,
+                                            parser: parser.state, skipped: (reset ? 0 : old!.skipped) + result.skipped,
                                             complete: result.cursor.offset >= size || result.bytesRead == 0 || result.bytesRead < max(1, budget + result.bytesRead))
                     try store.save(entry); try store.commit(); files[url.path] = entry
                 } catch { store.rollback(); throw error }
             }
         }
-        if provider == .codex { try store.reconcileForks(files: files) }
+        if let match = provider.source.ledger.matchFork { try store.reconcileForks(files: files, match: match) }
         return try snapshot(days: days, calendar: calendar, now: now)
     }
     public func snapshot(days: Int = 1, calendar: Calendar = .current, now: Date = Date()) throws -> IndexSnapshot {
         let start = calendar.date(byAdding: .day, value: 1 - max(1, days), to: calendar.startOfDay(for: now))!
         var snapshot = IndexSnapshot()
         snapshot.usage = try store.summary(since: start, until: now.addingTimeInterval(1))
+        snapshot.usage.unreadableSources = unreadablePaths.count
         snapshot.usage.filesTotal = knownURLs.count
         snapshot.usage.filesDone = knownURLs.filter { files[$0.path]?.complete == true }.count
-        snapshot.usage.indexing = snapshot.usage.filesDone < snapshot.usage.filesTotal
+        snapshot.usage.indexing = knownURLs.contains { !unreadablePaths.contains($0.path) && files[$0.path]?.complete != true }
         snapshot.usage.skippedLines = files.values.reduce(0) { $0 + $1.skipped + $1.parser.malformed + ($1.cursor.dropping ? 1 : 0) }
         snapshot.usage.compressedFiles = compressedCount
         var sessions: [String: SessionRecord] = [:]
@@ -115,9 +122,20 @@ public actor CodexIndex {
     private func discover() {
         var urls: [URL] = [], seen: Set<String> = []
         compressedCount = 0
-        for name in (provider == .codex ? ["sessions", "archived_sessions"] : ["projects"]) {
-            let directory = root.appendingPathComponent(name)
-            guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { continue }
+        unreadablePaths.removeAll()
+        for directory in directories {
+            // A source not installed on this Mac is optional. Permission and
+            // traversal failures, including errors below the root, affect coverage.
+            var info = stat()
+            if stat(directory.path, &info) != 0 {
+                if errno != ENOENT { unreadablePaths.insert(directory.path) }
+                continue
+            }
+            var failures: Set<String> = []
+            guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { url, _ in
+                failures.insert(url.path); return true
+            }) else { unreadablePaths.insert(directory.path); continue }
+            defer { unreadablePaths.formUnion(failures) }
             for case let url as URL in enumerator {
                 if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { enumerator.skipDescendants(); continue }
                 if url.pathExtension == "zst" { compressedCount += 1; continue }

@@ -45,11 +45,20 @@ struct WatcherPanel: View {
                         .accessibilityLabel(model.showAllSessions ? "收起会话" : "展开全部会话")
                 }
                 Spacer(minLength: 3)
-                Picker("筛选 Agent", selection: Binding(get: { model.selectedProvider }, set: { model.selectedProvider = $0; model.resize?(model.panelHeight) })) {
-                    Text("全部").tag(AgentProvider?.none)
-                    Text("Codex").tag(AgentProvider?.some(.codex))
-                    Text("Claude").tag(AgentProvider?.some(.claude))
-                }.pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 150)
+                Picker("筛选会话的 Agent", selection: Binding(
+                    get: { model.selectedProvider },
+                    set: { model.selectedProvider = $0; model.resize?(model.panelHeight) }
+                )) {
+                    Text("全部 Agent").tag(AgentProvider?.none)
+                    ForEach(AgentProvider.allCases, id: \.self) { provider in
+                        Text(provider.name).tag(Optional(provider))
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 108)
+                .help("按 Agent 筛选会话")
             }.padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 4)
             if model.visibleSessions.isEmpty {
                 HStack { Image(systemName: "circle.dotted"); Text(model.isIndexing ? "正在读取本机记录" : "暂无近期会话") }.foregroundStyle(secondary).font(.system(size: 11)).frame(height: 36)
@@ -73,7 +82,7 @@ struct WatcherPanel: View {
                 }.frame(height: CGFloat(min(model.visibleSessions.count, model.showAllSessions ? 9 : 5) * 36))
             }
             if model.isIndexing {
-                HStack { Text("索引"); Spacer(); Text("\(model.index.usage.filesDone + model.claudeIndex.usage.filesDone)/\(model.index.usage.filesTotal + model.claudeIndex.usage.filesTotal)") }.font(.system(size: 10)).foregroundStyle(secondary).padding(.horizontal, 16).frame(height: 24)
+                HStack { Text("索引"); Spacer(); Text("\(model.filesDone)/\(model.filesTotal)") }.font(.system(size: 10)).foregroundStyle(secondary).padding(.horizontal, 16).frame(height: 24)
             }
             Spacer(minLength: 8)
         }
@@ -82,19 +91,20 @@ struct WatcherPanel: View {
     private var footer: some View {
         VStack(spacing: 0) {
             Divider().padding(.horizontal, 12)
-            HStack(spacing: 6) {
-                quotaButton(.codex, remaining: model.quota?.windows.first(where: { $0.name == "Codex" && $0.seconds == 604800 })?.remainingPercent)
-                quotaButton(.claude, remaining: model.claudeQuota?.windows.first(where: { $0.id == "seven_day" })?.remainingPercent)
-                Spacer(minLength: 6)
+            HStack(spacing: 3) {
+                ForEach(AgentProvider.allCases, id: \.self) { provider in
+                    quotaButton(provider, remaining: model.accountQuota(provider)?.windows.first(where: provider.source.weeklyWindow)?.remainingPercent)
+                }
+                Spacer(minLength: 2)
                 Button { model.navigate(.history) } label: {
                     HStack(spacing: 3) {
-                        Text(model.todayTokenText).font(.system(size: 12, weight: .medium)).monospacedDigit()
-                        if model.index.usage.isPartial || model.claudeIndex.usage.isPartial {
+                        Text(model.todayTokenText).font(.system(size: 12, weight: .medium)).monospacedDigit().fixedSize()
+                        if model.usagePartial {
                             Image(systemName: "exclamationmark.circle").font(.system(size: 9)).foregroundStyle(secondary)
                         }
-                    }.frame(height: 28).padding(.horizontal, 3).contentShape(Rectangle())
+                    }.frame(height: 28).padding(.horizontal, 1).contentShape(Rectangle())
                 }.buttonStyle(QuietButtonStyle())
-                    .help("今日两种 Agent 的本机 token 合计，每小时更新；点击查看历史。标记表示部分统计。")
+                    .help("今日各 Agent 的本机 token 合计，每小时更新；点击查看历史。标记表示部分统计。")
                     .accessibilityLabel("今日总 token，\(model.todayTokenText)，打开历史用量")
                 iconButton(model.quotaBusy ? "ellipsis" : "arrow.clockwise", "刷新统计与额度 · ⌘R") { model.requestScan(); model.refreshQuota(manual: true) }.disabled(model.quotaBusy).keyboardShortcut("r")
                 iconButton("power", "退出 a-watcher · ⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q")
@@ -103,10 +113,10 @@ struct WatcherPanel: View {
     }
     private func quotaButton(_ provider: AgentProvider, remaining: Int?) -> some View {
         Button { model.showDetail(provider) } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 3) {
                 AgentIcon(provider: provider, size: 18)
                 QuotaRing(remaining: remaining, stale: model.accountQuotaError(provider) != nil)
-            }.frame(height: 28).padding(.horizontal, 3).contentShape(Rectangle())
+            }.frame(height: 28).padding(.horizontal, 1).contentShape(Rectangle())
         }.buttonStyle(QuietButtonStyle())
             .help(provider.name + " · 7 日剩余 " + (remaining.map { "\($0)%" } ?? "暂不可用") + (model.accountQuotaError(provider) != nil ? " · 数据未刷新" : "") + "；点击查看详情")
             .accessibilityLabel(provider.name + "，7 日剩余 " + (remaining.map { "\($0)%" } ?? "未知") + "，查看详情")
@@ -120,8 +130,8 @@ struct WatcherPanel: View {
                     AgentIcon(provider: provider, size: 26)
                     Text(provider.name).font(.system(size: 14, weight: .semibold))
                     Spacer(minLength: 6)
-                    Picker("Agent", selection: Binding(get: { model.detailProvider }, set: { model.showDetail($0) })) { Text("Codex").tag(AgentProvider.codex); Text("Claude").tag(AgentProvider.claude) }
-                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 120)
+                    Picker("Agent", selection: Binding(get: { model.detailProvider }, set: { model.showDetail($0) })) { ForEach(AgentProvider.allCases, id: \.self) { Text($0.source.shortName).tag($0) } }
+                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 150)
                 }
                 sectionTitle("账户额度", "账户 · 含其他设备")
                 if let quota = model.accountQuota(provider) {
@@ -136,7 +146,7 @@ struct WatcherPanel: View {
                         }
                     }
                     if quota.unlimitedCredits { row("积分", "无限") } else if let balance = quota.creditBalance { row("积分余额", balance) }
-                    if provider == .claude {
+                    if provider.source.billing {
                         if !quota.windows.contains(where: { $0.id == "seven_day" }) { row("7 日剩余", "未知") }
                         if let billing = quota.claudeBilling {
                             row("额外用量计费", billing.enabled.map { $0 ? "已启用" : "未启用" } ?? "未知")
@@ -150,23 +160,27 @@ struct WatcherPanel: View {
                     }
                     row("采集", quota.capturedAt.formatted(date: .omitted, time: .shortened))
                 } else if model.accountQuotaError(provider) == nil {
-                    Text("暂无额度数据").font(.system(size: 11)).foregroundStyle(secondary)
+                    Text(provider.source.quotaClient == nil ? "额度取决于模型服务商" : "暂无额度数据").font(.system(size: 11)).foregroundStyle(secondary)
                 }
                 if let error = model.accountQuotaError(provider) { Text(error.message(for: provider)).font(.system(size: 11)).foregroundStyle(amber).fixedSize(horizontal: false, vertical: true) }
                 Divider().padding(.vertical, 2)
                 sectionTitle("本机用量", "这台 Mac · 每小时更新")
+                if let error = model.scanErrors[provider] ?? model.watchErrors[provider] { Text(error).foregroundStyle(amber) }
                 Picker("日期范围", selection: Binding(get: { model.days }, set: { model.selectDays($0) })) { Text("今日").tag(1); Text("7 日").tag(7); Text("30 日").tag(30) }.pickerStyle(.segmented).labelsHidden().controlSize(.small)
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(compactNumber(model.detailUsage.tokens.total)).font(.system(size: 24, weight: .medium)).monospacedDigit()
+                    Text((model.detailUsage.filesTotal == 0 || (model.detailUsage.isPartial && model.detailUsage.records == 0)) ? "—" : compactNumber(model.detailUsage.tokens.total)).font(.system(size: 24, weight: .medium)).monospacedDigit()
                     Text("tokens").font(.system(size: 10)).foregroundStyle(secondary)
                     Spacer()
                     if model.detailUsage.isPartial { Text("部分统计").font(.system(size: 10)).foregroundStyle(amber) }
                 }
-                row("输入合计", compactNumber(model.detailUsage.tokens.input)); row("缓存读取¹", compactNumber(model.detailUsage.tokens.cached))
-                row("缓存写入¹", compactNumber(model.detailUsage.tokens.cacheWrite)); row("输出合计", compactNumber(model.detailUsage.tokens.output))
-                if provider == .codex { row("推理¹", compactNumber(model.detailUsage.tokens.reasoning)) }
+                if model.detailUsage.records > 0 || (model.detailUsage.filesTotal > 0 && !model.detailUsage.isPartial) {
+                    row("输入合计", compactNumber(model.detailUsage.tokens.input)); row("缓存读取¹", compactNumber(model.detailUsage.tokens.cached))
+                    row("缓存写入¹", compactNumber(model.detailUsage.tokens.cacheWrite)); row("输出合计", compactNumber(model.detailUsage.tokens.output))
+                    if provider.source.reasoning { row("推理¹", compactNumber(model.detailUsage.tokens.reasoning)) }
+                }
                 ForEach(model.detailUsage.byModel.prefix(8)) { row($0.name, compactNumber($0.tokens)) }
                 Text("¹ 已含在输入或输出中，不重复相加。").font(.system(size: 10)).foregroundStyle(secondary)
+                if model.detailUsage.unreadableSources > 0 { row("来源不可读", "部分目录或文件缺少访问权限") }
                 if model.detailUsage.isPartial { Text("跳过 \(model.detailUsage.skippedLines) 行 · 未完成请求 \(model.detailUsage.incompleteRequests) · 待确认继承 \(model.detailUsage.unresolvedForks) · 压缩文件 \(model.detailUsage.compressedFiles)").font(.system(size: 10)).foregroundStyle(secondary) }
             }.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 14)
         }
@@ -240,7 +254,7 @@ struct WatcherPanel: View {
                     if !session.directory.isEmpty { row("最近记录目录", session.directory) }
                     row("最近记录", session.observedAt.formatted(date: .abbreviated, time: .shortened)); row("来源", session.source)
                     row("会话编号", String(session.id.suffix(8)))
-                    Button(session.provider == .codex ? "打开 Codex" : "打开项目文件夹") { model.openSession(session) }.buttonStyle(.bordered).controlSize(.small)
+                    Button(session.provider.source.applicationID != nil ? "打开 " + session.provider.name : "打开项目文件夹") { model.openSession(session) }.buttonStyle(.bordered).controlSize(.small)
                 }.padding(16)
             }
         } else { Text("会话已不在近期列表").foregroundStyle(secondary).padding(16) }

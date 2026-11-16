@@ -34,13 +34,13 @@ import Sparkle
         item.length = 28
         activityIcon.frame.origin.x = 2
         item.button?.addSubview(activityIcon); self.activityIcon = activityIcon
-        item.button?.setAccessibilityLabel("Agent Watcher，查看两种 Agent 的工作状态")
+        item.button?.setAccessibilityLabel("Agent Watcher，查看各 Agent 的工作状态")
         item.button?.target = self; item.button?.action = #selector(toggle)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         self.item = item
         let model = WatcherModel()
         self.model = model
-        receiptsURL = model.dataDirectory.appendingPathComponent("completion-\(stableHash(model.root.path + "|" + model.claudeRoot.path).prefix(16)).json")
+        receiptsURL = model.dataDirectory.appendingPathComponent("completion-\(stableHash([.codex, .claude].compactMap { model.roots[$0]?.path }.joined(separator: "|")).prefix(16)).json")
         if let url = receiptsURL, let data = try? Data(contentsOf: url), data.count <= 65536,
            let receipts = try? JSONDecoder().decode(CompletionReceipts.self, from: data) { activity = ActivityTracker(receipts: receipts) }
         activityIcon.apply(activity.current(), animate: false)
@@ -138,7 +138,7 @@ import Sparkle
             }
         }
         // One deadline for stale status evidence; no repeating animation timer.
-        let next = model.allSessions.filter { $0.status.isActive && !$0.status.needsAttention }
+        let next = model.allSessions.filter { $0.status.isWorking || ($0.confirmedCompletions != nil && $0.status.needsAttention) }
             .map { $0.observedAt.addingTimeInterval(181) }.filter { $0 > Date() }.min()
         if let next {
             if let expiryAt, expiryAt <= next { return }
@@ -166,7 +166,7 @@ import Sparkle
     private func exportPreviews(to directory: URL) async {
         guard let model else { return }
         for _ in 0..<100 {
-            if model.index.usage.filesTotal > 0, !model.isIndexing, model.claudeIndex.usage.filesTotal > 0, !model.quotaBusy { break }
+            if model.snapshots[.codex, default: IndexSnapshot()].usage.filesTotal > 0, !model.isIndexing, model.snapshots[.claude, default: IndexSnapshot()].usage.filesTotal > 0, !model.quotaBusy { break }
             try? await Task.sleep(for: .milliseconds(500))
         }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -213,25 +213,25 @@ import Sparkle
         renderPanel(to: directory.appendingPathComponent("home-dark.png"))
         panel?.contentViewController?.view.window?.appearance = nil
         let report: [String: Any] = ["nativeViewRendering": true, "manualClickTest": false,
-            "filesIndexed": model.index.usage.filesTotal, "sessions": model.allSessions.count,
-            "claudeFilesIndexed": model.claudeIndex.usage.filesTotal, "claudeSessions": model.claudeIndex.sessions.count, "claudeQuotaAvailable": model.claudeQuota != nil, "claudeQuotaError": model.claudeQuotaError?.code.rawValue ?? "none",
-            "quotaWindows": model.quota?.windows.count ?? 0, "quotaError": model.quotaError?.code.rawValue ?? "none",
-            "partialUsage": model.index.usage.isPartial]
+            "filesIndexed": model.snapshots[.codex, default: IndexSnapshot()].usage.filesTotal, "sessions": model.allSessions.count,
+            "claudeFilesIndexed": model.snapshots[.claude, default: IndexSnapshot()].usage.filesTotal, "claudeSessions": model.snapshots[.claude, default: IndexSnapshot()].sessions.count, "claudeQuotaAvailable": model.quotas[.claude] != nil, "claudeQuotaError": model.quotaErrors[.claude]?.code.rawValue ?? "none",
+            "quotaWindows": model.quotas[.codex]?.windows.count ?? 0, "quotaError": model.quotaErrors[.codex]?.code.rawValue ?? "none",
+            "partialUsage": model.snapshots[.codex, default: IndexSnapshot()].usage.isPartial]
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: directory.appendingPathComponent("render-result.json"), options: .atomic)
         }
         // Explicit synthetic rendering cases. Stop live updates first so these
         // cannot be mixed with real observations or written to the ledger.
         model.stop()
-        model.index = IndexSnapshot(); model.claudeIndex = IndexSnapshot()
+        model.snapshots.removeAll()
         model.readyProviders = Set(AgentProvider.allCases)
-        model.quota = nil; model.quotaError = QuotaFailure(.offline)
-        model.claudeQuota = nil; model.claudeQuotaError = QuotaFailure(.offline)
+        model.quotas[.codex] = nil; model.quotaErrors[.codex] = QuotaFailure(.offline)
+        model.quotas[.claude] = nil; model.quotaErrors[.claude] = QuotaFailure(.offline)
         model.navigate(.home)
         try? await Task.sleep(for: .milliseconds(300))
         renderPanel(to: directory.appendingPathComponent("fixture-empty.png"))
         let names = ["项目名称很长时仍需保留右侧状态与时间", "a-watcher-with-a-very-long-project-name", "completed-project", "silent-project"]
-        model.index.sessions = names.enumerated().map { i, name in
+        model.snapshots[.codex, default: IndexSnapshot()].sessions = names.enumerated().map { i, name in
             SessionRecord(id: "render-fixture-\(i)", project: name, status: [SessionStatus.waitingInput, .tool, .idle, .running][i], observedAt: Date().addingTimeInterval(i == 3 ? -600 : -10))
         }
         model.navigate(.home)
@@ -244,8 +244,9 @@ import Sparkle
         guard let model else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let now = Date()
+        let exampleModels: [AgentProvider: String] = [.codex: "gpt-5-codex", .claude: "claude-sonnet", .pi: "local"]
         func session(_ provider: AgentProvider, _ id: String, _ project: String, _ status: SessionStatus, _ age: TimeInterval) -> SessionRecord {
-            var record = SessionRecord(id: "showcase-\(id)", project: project, directory: "/Users/demo/\(project)", model: provider == .codex ? "gpt-5-codex" : "claude-sonnet", status: status, observedAt: now.addingTimeInterval(-age))
+            var record = SessionRecord(id: "showcase-\(id)", project: project, directory: "/Users/demo/\(project)", model: exampleModels[provider] ?? "unknown", status: status, observedAt: now.addingTimeInterval(-age))
             record.provider = provider; record.projectDirectory = record.directory
             return record
         }
@@ -256,17 +257,21 @@ import Sparkle
                            session(.claude, "7", "infra-scripts", .waitingInput, 3000)]
         codex.usage.tokens = TokenUsage(input: 9_820_000, cached: 7_100_000, output: 214_000); codex.usage.filesTotal = 12; codex.usage.filesDone = 12
         claude.usage.tokens = TokenUsage(input: 5_960_000, cached: 4_800_000, output: 168_000); claude.usage.filesTotal = 9; claude.usage.filesDone = 9
-        model.index = codex; model.claudeIndex = claude; model.readyProviders = Set(AgentProvider.allCases)
+        var pi = IndexSnapshot()
+        pi.sessions = [session(.pi, "8", "pi-tools", .unknown, 45)]
+        pi.usage.tokens = TokenUsage(input: 2500, output: 500); pi.usage.filesDone = 1; pi.usage.filesTotal = 1
+        model.snapshots = [.codex: codex, .claude: claude, .pi: pi]
+        model.readyProviders = Set(AgentProvider.allCases)
         func snapshot(_ windows: [[String: Any]]) -> QuotaSnapshot? {
             let object: [String: Any] = ["binding": "showcase", "capturedAt": now.timeIntervalSinceReferenceDate, "windows": windows, "unlimitedCredits": false]
             return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? JSONDecoder().decode(QuotaSnapshot.self, from: $0) }
         }
         let day = 86400.0
-        model.quota = snapshot([["id": "codex:primary_window", "name": "Codex", "seconds": 18000, "usedPercent": 22, "resetsAt": now.timeIntervalSinceReferenceDate + 9000],
+        model.quotas[.codex] = snapshot([["id": "codex:primary_window", "name": "Codex", "seconds": 18000, "usedPercent": 22, "resetsAt": now.timeIntervalSinceReferenceDate + 9000],
                                 ["id": "codex:secondary_window", "name": "Codex", "seconds": 604800, "usedPercent": 38, "resetsAt": now.timeIntervalSinceReferenceDate + 3.2 * day]])
-        model.claudeQuota = snapshot([["id": "five_hour", "name": "Claude", "seconds": 18000, "usedPercent": 14, "resetsAt": now.timeIntervalSinceReferenceDate + 6000],
+        model.quotas[.claude] = snapshot([["id": "five_hour", "name": "Claude", "seconds": 18000, "usedPercent": 14, "resetsAt": now.timeIntervalSinceReferenceDate + 6000],
                                       ["id": "seven_day", "name": "Claude", "seconds": 604800, "usedPercent": 57, "resetsAt": now.timeIntervalSinceReferenceDate + 2.1 * day]])
-        model.quotaError = nil; model.claudeQuotaError = nil
+        model.quotaErrors[.codex] = nil; model.quotaErrors[.claude] = nil
         let calendar = model.historyCalendar
         var seed: UInt64 = 0x5eed
         func next() -> Double { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Double(seed >> 33) / Double(1 << 31) }
@@ -278,7 +283,7 @@ import Sparkle
                 var usage = UsageDay(date: date)
                 let scale = (provider == .codex ? 9_000_000.0 : 6_000_000.0) * (0.15 + next())
                 usage.tokens = TokenUsage(input: Int64(scale), cached: Int64(scale * 0.7), output: Int64(scale * 0.03)); usage.records = Int(scale / 40_000)
-                usage.models = [provider == .codex ? "gpt-5-codex" : "claude-sonnet": usage.tokens.total]
+                usage.models = [exampleModels[provider] ?? "unknown": usage.tokens.total]
                 history.days.append(usage)
             }
             history.days.sort { $0.date < $1.date }; history.firstRecordedAt = history.days.first?.date
@@ -294,6 +299,7 @@ import Sparkle
         }
         model.navigate(.home); await shot("home"); await shot("home-dark", dark: true)
         model.showDetail(.claude); await shot("detail")
+        model.showDetail(.pi); await shot("pi-detail")
         model.navigate(.history); model.applyShowcaseHistory(sources); await shot("history")
         model.navigate(.help); await shot("help")
         exportIconStates(to: directory)

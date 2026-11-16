@@ -5,6 +5,7 @@ struct UsageHistoryView: View {
     @ObservedObject var model: WatcherModel
     @Environment(\.colorScheme) private var scheme
     private var secondary: Color { PanelStyle.secondary(scheme) }
+    private var unknownYear: Bool { model.historyLoading || (model.historyPartial && model.historyMap.activeDays == 0) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -12,25 +13,25 @@ struct UsageHistoryView: View {
                     Text("历史用量").font(.system(size: 17, weight: .semibold))
                     Text("这台 Mac").font(.system(size: 11)).foregroundStyle(secondary)
                     Spacer()
+                    Picker("筛选历史用量的 Agent", selection: Binding(get: { model.historyScope }, set: { model.selectHistoryScope($0) })) {
+                        Text("合计").tag(AgentProvider?.none)
+                        ForEach(AgentProvider.allCases, id: \.self) { Text($0.name).tag(Optional($0)) }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 108)
+                    .help("按 Agent 筛选历史用量")
                     Picker("年份", selection: Binding(get: { model.historyYear }, set: { model.selectHistoryYear($0) })) {
                         ForEach(model.historyYears, id: \.self) { Text(String($0)).tag($0) }
                     }.labelsHidden().frame(width: 88)
                 }
-                HStack {
-                    Picker("Agent", selection: Binding(get: { model.historyScope }, set: { model.selectHistoryScope($0) })) {
-                        Text("合计").tag(AgentProvider?.none)
-                        Text("Codex").tag(AgentProvider?.some(.codex))
-                        Text("Claude").tag(AgentProvider?.some(.claude))
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 250)
+                HStack(spacing: 40) {
+                    metric("全年 token", unknownYear ? "—" : compactNumber(model.historyMap.total))
+                    metric("用量天数", unknownYear ? "—" : "\(model.historyMap.activeDays)")
+                    metric("单日最高", unknownYear ? "—" : compactNumber(model.historyMap.peak))
                     Spacer()
                     Text(model.historyLoading ? "读取缓存中" : model.historyPartial ? "部分统计 · 已索引记录" : "已索引本机记录")
                         .font(.system(size: 10)).foregroundStyle(secondary)
-                }
-                HStack(spacing: 40) {
-                    metric("全年 token", model.historyLoading ? "—" : compactNumber(model.historyMap.total))
-                    metric("用量天数", "\(model.historyMap.activeDays)")
-                    metric("单日最高", compactNumber(model.historyMap.peak))
-                    Spacer()
                 }.padding(.vertical, 3)
                 HistoryHeatmap(map: model.historyMap, calendar: model.historyCalendar, selected: $model.historySelection)
                     .frame(height: 112)
@@ -43,7 +44,6 @@ struct UsageHistoryView: View {
                 }.font(.system(size: 11)).foregroundStyle(secondary)
                 Divider()
                 HStack {
-                    DatePicker("日期", selection: $model.historySelection, in: model.historyBounds, displayedComponents: .date).labelsHidden().fixedSize()
                     Spacer()
                     if model.selectedHistoryDay.records > 0 {
                         Text(model.selectedHistoryDay.tokens.total.formatted() + " tok").font(.system(size: 15, weight: .semibold)).monospacedDigit()
@@ -54,9 +54,9 @@ struct UsageHistoryView: View {
                         ForEach(model.historyScope.map { [$0] } ?? AgentProvider.allCases, id: \.self) { provider in
                             HStack(spacing: 7) {
                                 AgentIcon(provider: provider, size: 18)
-                                Text(provider == .codex ? "Codex" : "Claude").foregroundStyle(secondary)
+                                Text(provider.source.shortName).foregroundStyle(secondary)
                                 Spacer()
-                                Text(compactNumber(model.selectedHistoryUsage(provider).tokens.total)).monospacedDigit()
+                                Text(model.historyValue(provider)).monospacedDigit()
                             }
                         }
                     }.frame(width: 180)
@@ -82,12 +82,11 @@ struct UsageHistoryView: View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.system(size: 10)).foregroundStyle(secondary); Text(value).font(.system(size: 23, weight: .medium)).monospacedDigit() }
     }
     private func detail(_ title: String, _ amount: Int64) -> some View {
-        HStack { Text(title).foregroundStyle(secondary); Spacer(); Text(compactNumber(amount)).monospacedDigit() }
+        HStack { Text(title).foregroundStyle(secondary); Spacer(); Text(model.historyPartial && model.selectedHistoryDay.records == 0 ? "—" : compactNumber(amount)).monospacedDigit() }
     }
 }
 
-/// One drawing surface instead of hundreds of native controls. The date picker
-/// above the detail rows provides keyboard/VoiceOver access to every day.
+/// One drawing surface for the entire year.
 private struct HistoryHeatmap: View {
     let map: UsageHeatmap
     let calendar: Calendar
@@ -125,9 +124,24 @@ private struct HistoryHeatmap: View {
             if hovered != next { hovered = next }
         }
         .onTapGesture(coordinateSpace: .local) { point in if let day = hit(point), !day.future { selected = day.date } }
+        .focusable()
+        .onKeyPress(.leftArrow) { moveSelection(by: -1); return .handled }
+        .onKeyPress(.rightArrow) { moveSelection(by: 1); return .handled }
         .help(tooltip)
         .accessibilityElement(children: .ignore).accessibilityLabel("每日 token 热力图")
-        .accessibilityValue("可使用下方日期选择器查看每天的准确数值")
+        .accessibilityValue(selected.formatted(date: .complete, time: .omitted))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: moveSelection(by: 1)
+            case .decrement: moveSelection(by: -1)
+            @unknown default: break
+            }
+        }
+    }
+    private func moveSelection(by days: Int) {
+        guard let date = calendar.date(byAdding: .day, value: days, to: selected),
+              let cell = map.cells.first(where: { calendar.isDate($0.date, inSameDayAs: date) }), !cell.future else { return }
+        selected = cell.date
     }
     private var tooltip: String {
         guard let hovered, let cell = map.cells.first(where: { $0.date == hovered }) else { return "每格一天，颜色越深用量越多。点击查看当天明细。" }

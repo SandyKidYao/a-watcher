@@ -1,5 +1,12 @@
 import Foundation
 
+/// Match Node realpathSync and macOS enumeration paths, including /private aliases.
+func physicalPath(_ path: String) -> String {
+    guard let value = realpath(path, nil) else { return path }
+    defer { free(value) }
+    return String(cString: value)
+}
+
 public enum SessionProject {
     /// Resolve once from the session's initial directory. Worktree .git files
     /// count as repository markers too; no git process or directory scan.
@@ -20,11 +27,7 @@ public enum SessionProject {
         do {
             _ = try LineReader.read(url, cursor: ReadCursor(), byteBudget: 2 * 1024 * 1024) { line, _ in
                 guard let record = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
-                let object: [String: Any]?
-                if provider == .claude { object = record }
-                else if record["type"] as? String == "session_meta" { object = record["payload"] as? [String: Any] }
-                else { object = nil }
-                if let cwd = object?["cwd"] as? String, cwd.hasPrefix("/"), cwd.utf8.count <= 4096 { throw HeaderFound.directory(cwd) }
+                if let cwd = provider.source.headerDirectory(record), cwd.hasPrefix("/"), cwd.utf8.count <= 4096 { throw HeaderFound.directory(cwd) }
             }
         } catch HeaderFound.directory(let cwd) { return cwd }
         catch { return nil }

@@ -17,31 +17,30 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     private var historyTask: Task<Void, Never>?
     private var panelVisible = false
     var historyCalendar: Calendar { var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .current; return calendar }
-    @Published var index = IndexSnapshot()
-    @Published var claudeIndex = IndexSnapshot()
+    @Published var snapshots: [AgentProvider: IndexSnapshot] = [:]
     @Published var selectedProvider: AgentProvider?
     /// Agent shown on the detail page: account quota and local usage together.
     @Published var detailProvider = AgentProvider.codex
     @Published var readyProviders: Set<AgentProvider> = []
-    @Published var quota: QuotaSnapshot?
-    @Published var claudeQuota: QuotaSnapshot?
-    @Published var claudeQuotaError: QuotaFailure?
-    @Published var quotaError: QuotaFailure?
-    @Published var scanError: String?
+    @Published var quotas: [AgentProvider: QuotaSnapshot] = [:]
+    @Published var quotaErrors: [AgentProvider: QuotaFailure] = [:]
+    @Published private(set) var scanErrors: [AgentProvider: String] = [:]
+    @Published private(set) var watchErrors: [AgentProvider: String] = [:]
     @Published var quotaBusy = false
     @Published var days = 1
     @Published var detailUsage = UsageSummary()
     @Published var page = PanelPage.home
     @Published var showAllSessions = false
-    let root: URL
-    let claudeRoot: URL
+    let sessionDirectories: [AgentProvider: URL]
+    let roots: [AgentProvider: URL]
     let dataDirectory: URL
-    let claudeQuotaClient: ClaudeQuotaClient
-    /// Synthetic showcase rendering: never touch logs, credentials or the network.
     var offline = false
-    private var claudeQuotaCheckedAt = Date.distantPast
-    let quotaClient: CodexQuotaClient
-    private var engines: [AgentProvider: CodexIndex] = [:]
+    private var quotaClients: [AgentProvider: any AgentQuotaClient] = [:]
+    private var quotaCheckedAt: [AgentProvider: Date] = [:]
+    private var engines: [AgentProvider: AgentIndex] = [:]
+    private var bridgeWatches: [AgentProvider: SourceWatcher] = [:]
+    private var feeds: [AgentProvider: any AgentStatusFeed] = [:]
+    @Published private var evidenceByAgent: [AgentProvider: [String: SessionRecord]] = [:]
     private var watchers: [AgentProvider: SourceWatcher] = [:]
     private var liveReaders: [AgentProvider: LiveStatusReader] = [:]
     private var statusTasks: [AgentProvider: Task<Void, Never>] = [:]
@@ -58,15 +57,31 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     init() {
         let args = CommandLine.arguments
         func option(_ key: String) -> String? { guard let i = args.firstIndex(of: key), args.count > i + 1 else { return nil }; return args[i + 1] }
-        root = URL(fileURLWithPath: option("--codex-home") ?? ProcessInfo.processInfo.environment["CODEX_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path).standardizedFileURL.resolvingSymlinksInPath()
-        claudeRoot = URL(fileURLWithPath: option("--claude-home") ?? ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path).standardizedFileURL.resolvingSymlinksInPath()
+        sessionDirectories = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.compactMap { provider in
+            provider.source.sessionOverride(option("--" + provider.rawValue + "-session-dir")).map { (provider, $0) }
+        })
+        roots = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.map { ($0, $0.source.root(override: option("--" + $0.rawValue + "-home"))) })
         dataDirectory = URL(fileURLWithPath: option("--data-dir") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/a-watcher").path)
-        let identifier = String(stableHash(root.path).prefix(16))
-        claudeQuotaClient = ClaudeQuotaClient(root: claudeRoot, cacheFile: dataDirectory.appendingPathComponent("quota-claude-\(stableHash(claudeRoot.path).prefix(16)).json"))
-        quotaClient = CodexQuotaClient(root: root, cacheFile: dataDirectory.appendingPathComponent("quota-\(identifier).json"))
+        for (provider, root) in roots {
+            quotaClients[provider] = provider.source.quotaClient?(root, dataDirectory)
+        }
     }
     var allSessions: [SessionRecord] {
-        (index.sessions + claudeIndex.sessions).sorted {
+        let sessions = snapshots.values.flatMap(\.sessions)
+        let metadata = Dictionary(sessions.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let now = Date()
+        let live = evidenceByAgent.values.flatMap { $0.values }.compactMap { evidence -> SessionRecord? in
+            guard now.timeIntervalSince(evidence.observedAt) < 86400 else { return nil }
+            var session = metadata[evidence.key] ?? evidence
+            if !evidence.status.isActive && session.observedAt > evidence.observedAt.addingTimeInterval(1) { return nil }
+            session.status = evidence.status.isActive && now.timeIntervalSince(evidence.observedAt) >= 180 ? .unknown : evidence.status
+            session.confirmedCompletions = evidence.confirmedCompletions
+            session.observedAt = evidence.observedAt
+            session.source = evidence.source
+            return session
+        }
+        let liveKeys = Set(live.map(\.key))
+        return (sessions.filter { !liveKeys.contains($0.key) } + live).sorted {
             let a = projectedStatus($0), b = projectedStatus($1)
             let x = a.needsAttention ? 0 : a.isActive ? 1 : 2, y = b.needsAttention ? 0 : b.isActive ? 1 : 2
             return x == y ? $0.observedAt > $1.observedAt : x < y
@@ -77,16 +92,19 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     var panelWidth: CGFloat { page == .history ? 760 : 320 }
     var panelHeight: CGFloat { page == .history ? 540 : page == .help ? 560 : page == .detail ? 520 : page == .home ? CGFloat(86 + max(1, min(visibleSessions.count, showAllSessions ? 9 : 5)) * 36 + (isIndexing ? 24 : 0)) : 460 }
     var todayTokenText: String {
-        guard index.usage.filesTotal + claudeIndex.usage.filesTotal > 0 else { return "—" }
-        return compactNumber(index.usage.tokens.total + claudeIndex.usage.tokens.total)
+        guard filesTotal > 0, !(usagePartial && snapshots.values.allSatisfy { $0.usage.records == 0 }) else { return "—" }
+        return compactNumber(snapshots.values.reduce(0) { $0.addingReportingOverflow($1.usage.tokens.total).overflow ? Int64.max : $0 + $1.usage.tokens.total })
     }
-    var isIndexing: Bool { readyProviders.count < AgentProvider.allCases.count || index.usage.indexing || claudeIndex.usage.indexing }
-    var activeCount: Int { allSessions.filter { projectedStatus($0).isActive }.count }
+    var filesTotal: Int { snapshots.values.reduce(0) { $0 + $1.usage.filesTotal } }
+    var filesDone: Int { snapshots.values.reduce(0) { $0 + $1.usage.filesDone } }
+    var usagePartial: Bool { isIndexing || !scanErrors.isEmpty || snapshots.values.contains { $0.usage.isPartial } }
+    var isIndexing: Bool { readyProviders.count < AgentProvider.allCases.count || snapshots.values.contains { $0.usage.indexing } }
+    var activeCount: Int { allSessions.filter { projectedStatus($0).isWorking }.count }
     var attentionCount: Int { allSessions.filter { projectedStatus($0).needsAttention }.count }
-    func snapshot(_ provider: AgentProvider) -> IndexSnapshot { provider == .codex ? index : claudeIndex }
-    func activeCount(_ provider: AgentProvider) -> Int { snapshot(provider).sessions.filter { projectedStatus($0).isActive }.count }
+    func snapshot(_ provider: AgentProvider) -> IndexSnapshot { snapshots[provider] ?? IndexSnapshot() }
+    func activeCount(_ provider: AgentProvider) -> Int { allSessions.filter { $0.provider == provider && projectedStatus($0).isWorking }.count }
     func projectedStatus(_ session: SessionRecord) -> SessionStatus {
-        if [.running, .tool].contains(session.status), session.source == "日志", Date().timeIntervalSince(session.observedAt) > 180 { return .unknown }
+        if [.running, .tool].contains(session.status), Date().timeIntervalSince(session.observedAt) > 180 { return .unknown }
         return session.status == .tool ? .running : session.status
     }
     func statusHelp(_ session: SessionRecord) -> String {
@@ -97,33 +115,51 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     }
     func start() {
         Task {
-            quota = await quotaClient.lastKnown()
-            claudeQuota = await claudeQuotaClient.lastKnown()
+            for (provider, client) in quotaClients { quotas[provider] = await client.lastKnown() }
             for provider in AgentProvider.allCases {
-                let source = provider == .codex ? root : claudeRoot
-                let database = dataDirectory.appendingPathComponent("index-\(provider.rawValue)-\(stableHash(source.path).prefix(16))-v2.sqlite")
+                guard let source = roots[provider] else { continue }
+                let override = sessionDirectories[provider]
+                let cacheSource = override.map { source.path + "|" + $0.path } ?? source.path
+                let database = dataDirectory.appendingPathComponent("index-\(provider.rawValue)-\(stableHash(cacheSource).prefix(16))-v2.sqlite")
                 do {
-                    engines[provider] = try await Task.detached(priority: .utility) { try CodexIndex(root: source, database: database, provider: provider) }.value
-                    liveReaders[provider] = LiveStatusReader(root: source, provider: provider)
-                    let watched = provider == .codex ? source : source.appendingPathComponent("projects")
+                    engines[provider] = try await Task.detached(priority: .utility) { try AgentIndex(root: source, database: database, provider: provider, sessionDirectory: override) }.value
+                    liveReaders[provider] = LiveStatusReader(root: source, provider: provider, sessionDirectory: override)
+                    let watched = override ?? source.appendingPathComponent(provider.source.watchDirectory)
                     if FileManager.default.fileExists(atPath: watched.path) {
                         do {
                             watchers[provider] = try SourceWatcher(root: watched) { [weak self] paths in
                                 Task { @MainActor [weak self] in
                                     self?.requestStatus(provider, paths: paths)
-                                    if provider == .codex, paths.contains(where: { $0.hasSuffix("auth.json") }) { self?.refreshQuota() }
+                                    if let auth = provider.source.quotaAuthFile, paths.contains(source.appendingPathComponent(auth).path) { self?.refreshQuota() }
                                 }
                             }
-                        } catch { scanError = "\(provider.name) 自动监听不可用，可手动刷新" }
+                        } catch { watchErrors[provider] = "\(provider.name) 自动监听不可用，可手动刷新" }
                     }
+                    if let feed = provider.source.statusFeed?(source, dataDirectory) { startBridge(feed, provider: provider) }
                     requestScan(provider)
-                } catch { scanError = "\(provider.name) 索引暂不可用"; readyProviders.insert(provider) }
+                } catch { scanErrors[provider] = "\(provider.name) 索引暂不可用"; readyProviders.insert(provider) }
             }
             refreshQuota(); scheduleRefresh()
         }
         lifecycle = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: DispatchQueue.main).sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.requestScan(); self?.refreshQuota() }
         }
+    }
+    private func startBridge(_ feed: any AgentStatusFeed, provider: AgentProvider) {
+        let directory = feed.directory
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            feeds[provider] = feed
+            bridgeWatches[provider] = try SourceWatcher(root: directory) { [weak self] paths in
+                Task { @MainActor in await self?.updateBridge(provider, paths: paths) }
+            }
+            Task { await updateBridge(provider, paths: [directory.path]) }
+        } catch { watchErrors[provider] = "\(provider.name) 实时状态监听不可用" }
+    }
+    private func updateBridge(_ provider: AgentProvider, paths: [String]) async {
+        guard let feed = feeds[provider] else { return }
+        evidenceByAgent[provider] = await feed.update(paths: paths, now: Date())
+        changed?(); resize?(panelHeight)
     }
     func requestScan(_ provider: AgentProvider? = nil) {
         guard let provider else { AgentProvider.allCases.forEach { requestScan($0) }; return }
@@ -146,13 +182,14 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                             next.sessions = SessionRecord.latest(next.sessions + snapshot(provider).sessions + fresh)
                         }
                         readyProviders.insert(provider)
-                        if provider == .codex { index = next } else { claudeIndex = next }
+                        scanErrors[provider] = nil
+                        snapshots[provider] = next
                         if page == .detail, detailProvider == provider { detailUsage = try await engine.snapshot(days: days).usage }
                         changed?(); resize?(panelHeight); pending = next.usage.indexing
                         if pending { try await Task.sleep(for: .milliseconds(80)) }
                     } while pending
                 } catch is CancellationError { break }
-                catch { scanError = "\(provider.name) 本机统计更新失败"; readyProviders.insert(provider); break }
+                catch { scanErrors[provider] = "\(provider.name) 本机统计更新失败"; readyProviders.insert(provider); break }
             } while rescanRequested.contains(provider) && !Task.isCancelled
             statisticsUpdatedAt = Date()
             scanTasks[provider] = nil
@@ -171,7 +208,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
                 let fresh = await reader.update(paths: paths)
                 watchers[provider]?.watchFiles(await reader.takeWatchPaths())
                 let merged = SessionRecord.latest(snapshot(provider).sessions + fresh)
-                if provider == .codex { index.sessions = merged } else { claudeIndex.sessions = merged }
+                snapshots[provider, default: IndexSnapshot()].sessions = merged
                 changed?(); resize?(panelHeight)
                 await Task.yield()
                 if pendingPaths[provider]?.isEmpty ?? true, !(await reader.hasPendingUpdates) { break }
@@ -187,36 +224,29 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
             if let result = try? await engine.snapshot(days: value), days == value, detailProvider == provider { detailUsage = result.usage }
         }
     }
-    func accountQuota(_ provider: AgentProvider) -> QuotaSnapshot? { provider == .codex ? quota : claudeQuota }
-    func accountQuotaError(_ provider: AgentProvider) -> QuotaFailure? { provider == .codex ? quotaError : claudeQuotaError }
+    func accountQuota(_ provider: AgentProvider) -> QuotaSnapshot? { quotas[provider] }
+    func accountQuotaError(_ provider: AgentProvider) -> QuotaFailure? { quotaErrors[provider] }
     func showDetail(_ provider: AgentProvider) { detailProvider = provider; navigate(.detail) }
     func refreshQuota(manual: Bool = false) {
         guard !offline, quotaTask == nil else { return }
         quotaBusy = true
         quotaTask = Task { [weak self] in
             guard let self else { return }
-            if !manual, quotaError == nil, let existing = await quotaClient.lastKnown(), Date().timeIntervalSince(existing.capturedAt) < 3600 {
-                quota = existing
-            } else {
-                do { quota = try await quotaClient.refresh(manual: manual); quotaError = nil }
-                catch let error as QuotaFailure {
-                    quotaError = error
-                    quota = error.invalidatesSnapshot ? nil : await quotaClient.lastKnown()
-                } catch { if !Task.isCancelled { quotaError = QuotaFailure(.offline) } }
-            }
-            // Each Claude credential check runs /usr/bin/security; automatic checks stay at most once per 10 minutes.
-            // A refused Keychain read must never re-prompt in the background; only a manual refresh retries it.
-            if manual || (claudeQuotaError?.code != .credentialAccess && Date().timeIntervalSince(claudeQuotaCheckedAt) >= 600) {
-                claudeQuotaCheckedAt = Date()
-                if !manual, claudeQuotaError == nil, let existing = await claudeQuotaClient.lastKnown(), Date().timeIntervalSince(existing.capturedAt) < 3600 {
-                    claudeQuota = existing
-                } else {
-                    do { claudeQuota = try await claudeQuotaClient.refresh(manual: manual); claudeQuotaError = nil }
-                    catch let error as QuotaFailure {
-                        claudeQuotaError = error
-                        claudeQuota = error.invalidatesSnapshot ? nil : await claudeQuotaClient.lastKnown()
-                    } catch { if !Task.isCancelled { claudeQuotaError = QuotaFailure(.offline) } }
+            for (provider, client) in quotaClients {
+                let interval = provider.source.automaticQuotaInterval
+                if !manual, quotaErrors[provider]?.code == .credentialAccess || Date().timeIntervalSince(quotaCheckedAt[provider] ?? .distantPast) < interval { continue }
+                quotaCheckedAt[provider] = Date()
+                if !manual, quotaErrors[provider] == nil, let cached = await client.lastKnown(), Date().timeIntervalSince(cached.capturedAt) < 3600 {
+                    quotas[provider] = cached
+                    continue
                 }
+                do {
+                    quotas[provider] = try await client.refresh(manual: manual)
+                    quotaErrors[provider] = nil
+                } catch let error as QuotaFailure {
+                    quotaErrors[provider] = error
+                    quotas[provider] = error.invalidatesSnapshot ? nil : await client.lastKnown()
+                } catch { if !Task.isCancelled { quotaErrors[provider] = QuotaFailure(.offline) } }
             }
             quotaBusy = false; quotaTask = nil; changed?(); resize?(panelHeight)
         }
@@ -238,6 +268,11 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
     var selectedHistoryDay: UsageDay { historyMap.cells.first { historyCalendar.isDate($0.date, inSameDayAs: historySelection) }?.usage ?? UsageDay(date: historySelection) }
     func selectedHistoryUsage(_ provider: AgentProvider) -> UsageDay {
         historySources[provider]?.days.first { historyCalendar.isDate($0.date, inSameDayAs: historySelection) } ?? UsageDay(date: historySelection)
+    }
+    func historyValue(_ provider: AgentProvider) -> String {
+        let day = selectedHistoryUsage(provider)
+        if day.records == 0 && (historySources[provider]?.isPartial != false || scanErrors[provider] != nil) { return "—" }
+        return compactNumber(day.tokens.total)
     }
     var historyBounds: ClosedRange<Date> {
         let start = historyCalendar.date(from: DateComponents(year: historyYear, month: 1, day: 1))!
@@ -263,7 +298,7 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
             guard let self else { return }
             var result: [AgentProvider: UsageHistory] = [:], readFailed = false
             for provider in AgentProvider.allCases {
-                guard let engine = engines[provider] else { result[provider] = UsageHistory(); continue }
+                guard let engine = engines[provider] else { readFailed = true; continue }
                 do { result[provider] = try await engine.history(year: year, calendar: calendar) }
                 catch { result[provider] = UsageHistory(); readFailed = true }
                 if Task.isCancelled { return }
@@ -286,14 +321,14 @@ enum PanelPage: Equatable { case home, detail, history, help, session(String) }
             for day in historySources[provider]?.days ?? [] { combined[day.date, default: UsageDay(date: day.date)].merge(day) }
         }
         historyMap = UsageHeatmap(year: historyYear, days: Array(combined.values), calendar: historyCalendar)
-        historyPartial = providers.contains { historySources[$0]?.isPartial != false || snapshot($0).usage.indexing } || historyError != nil
+        historyPartial = providers.contains { historySources[$0]?.isPartial != false || snapshot($0).usage.indexing || scanErrors[$0] != nil } || historyError != nil
     }
     func openSession(_ session: SessionRecord) {
-        if session.provider == .codex, let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
+        if let bundleID = session.provider.source.applicationID, let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             NSWorkspace.shared.openApplication(at: application, configuration: .init())
-        } else { NSWorkspace.shared.open(URL(fileURLWithPath: session.projectDirectory ?? (session.directory.isEmpty ? (session.provider == .codex ? root.path : claudeRoot.path) : session.directory))) }
+        } else { NSWorkspace.shared.open(URL(fileURLWithPath: session.projectDirectory ?? (session.directory.isEmpty ? (roots[session.provider]?.path ?? NSHomeDirectory()) : session.directory))) }
     }
-    func stop() { historyTask?.cancel(); scanTasks.values.forEach { $0.cancel() }; statusTasks.values.forEach { $0.cancel() }; quotaTask?.cancel(); cadence?.cancel(); watchers.values.forEach { $0.stop() }; watchers.removeAll(); lifecycle = nil }
+    func stop() { bridgeWatches.values.forEach { $0.stop() }; historyTask?.cancel(); scanTasks.values.forEach { $0.cancel() }; statusTasks.values.forEach { $0.cancel() }; quotaTask?.cancel(); cadence?.cancel(); watchers.values.forEach { $0.stop() }; watchers.removeAll(); lifecycle = nil }
     private func scheduleRefresh() {
         cadence = Task { [weak self] in
             while !Task.isCancelled {

@@ -6,14 +6,14 @@ import WatcherCore
 @MainActor enum BrandAssets {
     private static var images: [String: NSImage] = [:]
     static func image(_ provider: AgentProvider, dark: Bool = false) -> NSImage {
-        let name = provider == .codex ? (dark ? "codex-dark" : "codex") : "claude"
+        let name = dark ? provider.source.darkAsset ?? provider.rawValue : provider.rawValue
         if let cached = images[name] { return cached }
         let url = Bundle.main.resourceURL?.appendingPathComponent("Brand/\(name).png")
-        if let url, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+        if let url, FileManager.default.fileExists(atPath: url.path), let source = CGImageSourceCreateWithURL(url as CFURL, nil),
            let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 64, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) {
             let image = NSImage(cgImage: thumbnail, size: NSSize(width: 32, height: 32)); images[name] = image; return image
         }
-        return NSImage(systemSymbolName: "app", accessibilityDescription: provider.name)!
+        return NSImage(systemSymbolName: provider.source.symbol, accessibilityDescription: provider.name)!
     }
 }
 struct AgentIcon: View {

@@ -27,6 +27,8 @@ public struct ActivityTracker: Sendable {
     public private(set) var receipts: CompletionReceipts
     private var observations: [String: SessionRecord] = [:]
     private var initialized = false
+    private var completionBaseline: Date?
+    private var completionWatermarks: [String: Date] = [:]
     public init(receipts: CompletionReceipts = CompletionReceipts()) {
         self.receipts = receipts
         self.receipts.unread = min(999, max(0, receipts.unread))
@@ -42,8 +44,16 @@ public struct ActivityTracker: Sendable {
             if detect {
                 if session.status.isWorking, previous?.status.isWorking != true,
                    now.timeIntervalSince(session.observedAt) <= 120 { started = true }
-                if session.status == .idle, previous?.status.isActive == true {
-                    let id = stableHash(session.key + "|" + String(session.observedAt.timeIntervalSince1970))
+                let dates: [Date]
+                if let confirmed = session.confirmedCompletions {
+                    let since = completionWatermarks[session.key] ?? completionBaseline ?? now
+                    dates = confirmed.filter { $0 > since && $0 <= session.observedAt }.sorted()
+                    if let newest = dates.last { completionWatermarks[session.key] = newest }
+                } else {
+                    dates = session.status == .idle && previous?.status.isActive == true ? [session.observedAt] : []
+                }
+                for date in dates {
+                    let id = stableHash(session.key + "|" + String(date.timeIntervalSince1970))
                     if !receipts.identifiers.contains(id) {
                         receipts.identifiers.append(id); receipts.identifiers = Array(receipts.identifiers.suffix(128))
                         receipts.unread = min(999, receipts.unread + 1); completed += 1
@@ -53,7 +63,8 @@ public struct ActivityTracker: Sendable {
             observations[session.key] = session
         }
         observations = observations.filter { $0.value.observedAt > now.addingTimeInterval(-86400) }
-        if !bootstrapping { initialized = true }
+        if !bootstrapping && !initialized { initialized = true; completionBaseline = now }
+        completionWatermarks = completionWatermarks.filter { observations[$0.key] != nil }
         var result = current(now: now)
         result.started = started; result.completed = completed
         return result
